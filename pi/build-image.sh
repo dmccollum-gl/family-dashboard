@@ -66,6 +66,24 @@ command -v xz      &>/dev/null || error "xz not found  (brew install xz)"
 command -v hdiutil &>/dev/null || error "hdiutil not found -- this script requires macOS"
 mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
 
+# -- WiFi credentials ----------------------------------------------------------
+# Pi OS Bookworm uses cloud-init (network-config) -- NOT wpa_supplicant.conf.
+# We write credentials into the FAT32 boot partition so the Pi connects on
+# first boot (needed for apt-get in firstrun.sh).
+step "WiFi configuration"
+echo "Enter WiFi credentials for the Pi (leave blank to skip -- configure manually later)."
+printf "  WiFi network name (SSID): "
+read -r WIFI_SSID
+if [ -n "$WIFI_SSID" ]; then
+  printf "  WiFi password: "
+  read -rs WIFI_PASSWORD
+  echo ""
+  info "WiFi will be pre-configured for: $WIFI_SSID"
+else
+  warn "No WiFi entered. Edit network-config on the SD card before first boot."
+  warn "See: pi/README-wifi.md for instructions."
+fi
+
 # -- Build React frontend on the host ------------------------------------------
 step "Building React frontend"
 FRONTEND_DIST="$PROJECT_DIR/frontend/dist"
@@ -157,6 +175,47 @@ cp "$SCRIPT_DIR/services/dashboard-display.service" "$STAGE_DIR/services/"
 
 info "App files staged in $STAGE_DIR"
 du -sh "$STAGE_DIR"
+
+# -- Write network-config (cloud-init WiFi for Pi OS Bookworm) -----------------
+# Pi OS Bookworm uses NetworkManager + cloud-init, NOT wpa_supplicant.conf.
+# The network-config file in the FAT32 boot partition is processed before
+# firstrun.sh runs, so WiFi is available when apt-get/pip execute.
+step "Writing network-config"
+if [ -n "${WIFI_SSID:-}" ] && [ -n "${WIFI_PASSWORD:-}" ]; then
+  cat > "$BOOT_MNT/network-config" << NETCFG
+version: 2
+ethernets:
+  eth0:
+    dhcp4: true
+    optional: true
+wifis:
+  wlan0:
+    dhcp4: true
+    optional: true
+    access-points:
+      "${WIFI_SSID}":
+        password: "${WIFI_PASSWORD}"
+NETCFG
+  info "network-config written for SSID: $WIFI_SSID"
+elif [ -n "${WIFI_SSID:-}" ]; then
+  # Open network (no password)
+  cat > "$BOOT_MNT/network-config" << NETCFG
+version: 2
+ethernets:
+  eth0:
+    dhcp4: true
+    optional: true
+wifis:
+  wlan0:
+    dhcp4: true
+    optional: true
+    access-points:
+      "${WIFI_SSID}": {}
+NETCFG
+  info "network-config written for open network: $WIFI_SSID"
+else
+  info "No WiFi entered -- leaving existing network-config unchanged."
+fi
 
 # -- Write firstrun.sh to the boot partition -----------------------------------
 step "Writing firstrun.sh"

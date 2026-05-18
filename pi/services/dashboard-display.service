@@ -1,0 +1,46 @@
+[Unit]
+Description=Family Dashboard — Pygame Kiosk Display
+Documentation=https://github.com/dmccollum-gl/family-dashboard
+After=dashboard-backend.service
+Requires=dashboard-backend.service
+# Wait for the backend to be ready before starting the display
+After=network-online.target
+
+[Service]
+Type=simple
+User=dashboard
+Group=render
+
+WorkingDirectory=/opt/dashboard/backend
+
+Environment="PATH=/opt/dashboard/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+# KMS/DRM direct rendering — no X11 or Wayland needed
+# On Pi OS Bookworm this is the default video stack
+Environment="SDL_VIDEODRIVER=kmsdrm"
+# Software renderer fallback — reliable on all Pi models including Zero 2 W
+# Remove or change to "opengles2" on Pi 4/5 for GPU-accelerated rendering
+Environment="SDL_RENDER_DRIVER=software"
+# Suppress ALSA audio errors (we don't use audio)
+Environment="SDL_AUDIODRIVER=dummy"
+
+# Give the backend a few seconds to be accepting connections
+ExecStartPre=/bin/sleep 5
+ExecStart=/opt/dashboard/venv/bin/python3 display.py --fullscreen
+
+Restart=always
+RestartSec=10
+# KMS/DRM requires a brief gap before re-opening the device
+TimeoutStopSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dashboard-display
+
+# Must NOT be sandboxed — needs /dev/dri/* access
+PrivateTmp=no
+PrivateDevices=no
+
+[Install]
+WantedBy=multi-user.target

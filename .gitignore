@@ -1,0 +1,25 @@
+# Secrets & runtime config (copy examples and fill in values)
+backend/.env
+backend/dashboard_config.json
+backend/dashboard.db
+backend/dashboard.db-shm
+backend/dashboard.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db

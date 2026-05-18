@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic-settings
+pydantic
+httpx
+feedparser
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+sqlalchemy
+itsdangerous
+starlette

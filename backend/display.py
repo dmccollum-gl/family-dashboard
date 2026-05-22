@@ -372,7 +372,7 @@ def _load_icon(code: str, size: int) -> Optional[pygame.Surface]:
     if not path.exists():
         try:
             urllib.request.urlretrieve(
-                f"https://openweathermap.org/img/wn/{code}@2x.png", path)
+                f"https://openweathermap.org/img/wn/{code}@4x.png", path)
         except Exception:
             _icon_cache[key] = None
             return None
@@ -677,10 +677,10 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
     surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 68)))
 
     # ── Clock ────────────────────────────────────────────────────────────
-    clk_s = _txt(now.strftime("%-I:%M"), 62, C["text"], bold=True)
+    clk_s = _txt(now.strftime("%-I:%M"), 71, C["text"], bold=True)
     clk_r = clk_s.get_rect(midleft=(CAL_X + CAL_W + 14, TOPBAR_H // 2))
     surf.blit(clk_s, clk_r)
-    ampm_s = _txt(now.strftime("%p"), 18, C["subtext"])
+    ampm_s = _txt(now.strftime("%p"), 18, C["text"])
     ampm_r = ampm_s.get_rect(topleft=(clk_r.right + 3, clk_r.top + 6))
     surf.blit(ampm_s, ampm_r)
     clock_right = ampm_r.right + 12
@@ -726,7 +726,7 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
         CUR_ICON_SZ = 54
         TEXT_W      = 185
         INNER_GAP   = 8
-        block_right = fc_x0 - 4
+        block_right = fc_x0 - 2
         block_left  = block_right - CUR_ICON_SZ - INNER_GAP - TEXT_W
 
         ic = _load_icon(icon, CUR_ICON_SZ) if icon else None
@@ -748,7 +748,7 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
     gap_x2 = wx_left - 8
     if gap_x2 - gap_x1 > 60:
         trect = pygame.Rect(gap_x1, 0, gap_x2 - gap_x1, TOPBAR_H)
-        ticker.draw(surf, trect, rss, 20, C["text"])
+        ticker.draw(surf, trect, rss, 30, C["text"])
 
 
 # ════════════════════════════════════════════════════════════════════════════

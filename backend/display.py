@@ -73,9 +73,9 @@ except ImportError:
 API_BASE     = "http://localhost:8001/api"
 GRID_START   = 8
 GRID_END     = 21
-TOPBAR_H     = 118
-FOOTER_H     = 26
-LABEL_W      = 52
+TOPBAR_H     = 144
+FOOTER_H     = 32
+LABEL_W      = 64
 ICON_CACHE   = Path("/tmp/dash_icons")
 ICON_CACHE.mkdir(exist_ok=True)
 
@@ -109,16 +109,16 @@ LIGHT = dict(
     cal_red   = (220,  38,  38),
 )
 DARK = dict(
-    bg        = (13,  17,  28 ),
-    surface   = (22,  30,  48 ),
+    bg        = (8,   10,  18 ),
+    surface   = (18,  24,  40 ),
     border    = (42,  55,  84 ),
-    text      = (226, 234, 250),
-    subtext   = (122, 142, 178),
+    text      = (248, 250, 255),
+    subtext   = (178, 200, 235),
     accent    = (96,  165, 250),
     today_bg  = (20,  52, 108 ),
     today_hdr = (56, 126, 246),
     now_line  = (250,  85,  85),
-    footer    = (10,  13,  22 ),
+    footer    = (8,   10,  18 ),
     cal_red   = (250,  85,  85),
 )
 
@@ -585,16 +585,54 @@ class _Ticker:
         item = self.current(items)
         if not item:
             return
-        label = f"[{item['source']}]  {item['title']}" if item.get("source") else item.get("title", "")
-        fnt   = _font(size)
-        ts    = _txt(label, size, color)
-        max_w = rect.width - 8
-        if ts.get_width() > max_w:
-            ts = _txt(_trunc(label, fnt, max_w), size, color)
-        r = ts.get_rect(center=rect.center)
+
+        source = item.get("source", "")
+        title  = item.get("title", "")
+
+        # Source label — fixed on far left, bold, slightly subdued
+        src_fnt  = _font(size - 2, bold=True)
+        src_surf = src_fnt.render(source, True, color) if source else None
+        SOURCE_W = (src_surf.get_width() + 16) if src_surf else 0
+
+        # Headline word-wraps to at most 2 lines in the remaining width
+        fnt    = _font(size)
+        text_x = rect.x + SOURCE_W + (8 if SOURCE_W else 4)
+        text_w = rect.right - text_x - 8
+
+        words  = title.split()
+        lines: list[str] = []
+        cur    = ""
+        for word in words:
+            test = (cur + " " + word).strip()
+            if fnt.size(test)[0] <= text_w:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = word
+            if len(lines) >= 2:
+                cur = ""
+                break
+        if cur and len(lines) < 2:
+            lines.append(cur)
+        lines = lines[:2]
+        if not lines:
+            lines = [_trunc(title, fnt, text_w)]
+        elif len(lines) == 2:
+            lines[1] = _trunc(lines[1], fnt, text_w)
+        else:
+            lines[0] = _trunc(lines[0], fnt, text_w)
+
+        line_h  = fnt.get_linesize()
+        total_h = len(lines) * line_h
+        y0      = rect.centery - total_h // 2
+
         old_clip = surf.get_clip()
         surf.set_clip(rect)
-        surf.blit(ts, r)
+        if src_surf:
+            surf.blit(src_surf, src_surf.get_rect(midleft=(rect.x + 6, rect.centery)))
+        for i, line in enumerate(lines):
+            surf.blit(fnt.render(line, True, color), (text_x, y0 + i * line_h))
         surf.set_clip(old_clip)
 
 
@@ -614,23 +652,23 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
     now = datetime.now()
 
     # ── Calendar page icon ───────────────────────────────────────────────
-    CAL_X, CAL_Y, CAL_W = 10, 8, 70
-    pygame.draw.rect(surf, C["surface"], (CAL_X, CAL_Y, CAL_W, 80), border_radius=6)
-    pygame.draw.rect(surf, C["border"],  (CAL_X, CAL_Y, CAL_W, 80), 1, border_radius=6)
-    pygame.draw.rect(surf, C["cal_red"], (CAL_X, CAL_Y, CAL_W, 22), border_radius=6)
-    pygame.draw.rect(surf, C["cal_red"], (CAL_X, CAL_Y + 16, CAL_W, 6))
+    CAL_X, CAL_Y, CAL_W, CAL_H = 10, 8, 82, 108
+    pygame.draw.rect(surf, C["surface"], (CAL_X, CAL_Y, CAL_W, CAL_H), border_radius=6)
+    pygame.draw.rect(surf, C["border"],  (CAL_X, CAL_Y, CAL_W, CAL_H), 1, border_radius=6)
+    pygame.draw.rect(surf, C["cal_red"], (CAL_X, CAL_Y, CAL_W, 30), border_radius=6)
+    pygame.draw.rect(surf, C["cal_red"], (CAL_X, CAL_Y + 24, CAL_W, 6))
 
-    t = _txt(MONTHS_S[now.month - 1], 13, (255, 255, 255), bold=True)
-    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 11)))
+    t = _txt(MONTHS_S[now.month - 1], 16, (255, 255, 255), bold=True)
+    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 15)))
 
-    t = _txt(str(now.day), 30, C["text"], bold=True)
-    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 44)))
+    t = _txt(str(now.day), 38, C["text"], bold=True)
+    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 30 + 38)))
 
-    t = _txt(DAYS_S[now.weekday()], 13, C["subtext"])
-    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 68)))
+    t = _txt(DAYS_S[now.weekday()], 16, C["subtext"])
+    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 30 + 78 - 12)))
 
     # ── Clock ────────────────────────────────────────────────────────────
-    clk_s = _txt(now.strftime("%-I:%M %p"), 62, C["text"], bold=True)
+    clk_s = _txt(now.strftime("%-I:%M %p"), 72, C["text"], bold=True)
     clk_r = clk_s.get_rect(midleft=(CAL_X + CAL_W + 14, TOPBAR_H // 2))
     surf.blit(clk_s, clk_r)
     clock_right = clk_r.right + 12
@@ -654,28 +692,28 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
         loc   = weather.get("location_label", weather.get("city", ""))
 
         # ── 4-day forecast strip (rightmost) ─────────────────────────────
-        FC_COL   = 56
+        FC_COL   = 74
         fc_strip = (forecast or [])[1:5]
         fc_total = len(fc_strip) * FC_COL
         fc_x0    = W - fc_total - 6
 
         for i, fd in enumerate(fc_strip):
             cx = fc_x0 + i * FC_COL + FC_COL // 2
-            fi = _load_icon(fd.get("icon", ""), 28)
+            fi = _load_icon(fd.get("icon", ""), 44)
             if fi:
-                surf.blit(fi, fi.get_rect(midtop=(cx, 4)))
+                surf.blit(fi, fi.get_rect(midtop=(cx, 2)))
             try:
                 dlbl = DAYS_S[datetime.strptime(fd["date"], "%Y-%m-%d").weekday()]
             except Exception:
                 dlbl = ""
-            _blit(surf, dlbl,                            11, C["subtext"], cx, 35, anchor="midtop")
-            _blit(surf, f"{fd.get('high', '')}{unit}",  13, C["text"],    cx, 50, bold=True, anchor="midtop")
-            _blit(surf, f"{fd.get('low',  '')}",        11, C["subtext"], cx, 66, anchor="midtop")
+            _blit(surf, dlbl,                            15, C["subtext"], cx, 50, anchor="midtop")
+            _blit(surf, f"{fd.get('high', '')}{unit}",  17, C["text"],    cx, 72, bold=True, anchor="midtop")
+            _blit(surf, f"{fd.get('low',  '')}",        15, C["subtext"], cx, 96, anchor="midtop")
 
         # ── Current weather block (icon + text, left of forecast) ─────────
-        CUR_ICON_SZ = 54
-        TEXT_W      = 185
-        INNER_GAP   = 8
+        CUR_ICON_SZ = 70
+        TEXT_W      = 210
+        INNER_GAP   = 10
         block_right = fc_x0 - 10
         block_left  = block_right - CUR_ICON_SZ - INNER_GAP - TEXT_W
 
@@ -684,12 +722,12 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
             surf.blit(ic, ic.get_rect(midleft=(block_left, TOPBAR_H // 2)))
 
         tx = block_left + CUR_ICON_SZ + INNER_GAP
-        _blit(surf, f"{temp}{unit}",               38, C["accent"],  tx,  4, bold=True)
-        _blit(surf, desc,                          12, C["subtext"], tx, 51)
-        _blit(surf, f"H:{hi}{unit}  L:{lo}{unit}", 12, C["subtext"], tx, 67)
-        _blit(surf, f"{feels}{unit}  {hum}%  {wind} {wunit}", 12, C["subtext"], tx, 82)
+        _blit(surf, f"{temp}{unit}",               44, C["accent"],  tx,  4, bold=True)
+        _blit(surf, desc,                          15, C["subtext"], tx, 58)
+        _blit(surf, f"H:{hi}{unit}  L:{lo}{unit}", 15, C["subtext"], tx, 78)
+        _blit(surf, f"{feels}{unit}  {hum}%  {wind} {wunit}", 14, C["subtext"], tx, 98)
         if loc:
-            _blit(surf, loc,                       11, C["subtext"], tx, 98)
+            _blit(surf, loc,                       14, C["subtext"], tx, 118)
 
         wx_left = block_left - 10
 
@@ -698,7 +736,7 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
     gap_x2 = wx_left - 8
     if gap_x2 - gap_x1 > 60:
         trect = pygame.Rect(gap_x1, 0, gap_x2 - gap_x1, TOPBAR_H)
-        ticker.draw(surf, trect, rss, 20, C["text"])
+        ticker.draw(surf, trect, rss, 24, C["text"])
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -711,14 +749,14 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
     today      = date.today()
     grid_hours = GRID_END - GRID_START
     col_w      = (w - LABEL_W) // num_days
-    hdr_h      = 24
+    hdr_h      = 32
 
     # Parse events first — needed to compute allday_h before laying out the grid.
     end_date = start + timedelta(days=num_days)
     all_day_evs, timed_evs = _parse_events(events_raw, start, end_date)
 
     # Assign all-day events to rows using a greedy span-aware algorithm.
-    AD_ROW_H   = 18
+    AD_ROW_H   = 26
     MAX_AD_ROWS = 3
     day_rows   = [[False] * MAX_AD_ROWS for _ in range(num_days)]  # day_rows[col][row]
     ad_placed  = []  # (ev, col_start, col_end, row)
@@ -767,13 +805,13 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         cx  = x + LABEL_W + d * col_w
         lbl = f"{DAYS_S[dt.weekday()]} {dt.day}"
         if dt == today:
-            pill_w = min(col_w - 10, 74)
+            pill_w = min(col_w - 8, 96)
             pill_r = pygame.Rect(cx + (col_w - pill_w) // 2, y + 3, pill_w, hdr_h - 6)
             pygame.draw.rect(surf, C.get("today_hdr", C["accent"]), pill_r, border_radius=10)
-            _blit(surf, lbl, 13, (255, 255, 255), cx + col_w // 2, y + hdr_h // 2,
+            _blit(surf, lbl, 17, (255, 255, 255), cx + col_w // 2, y + hdr_h // 2,
                   bold=True, anchor="center")
         else:
-            _blit(surf, lbl, 13, C["text"], cx + col_w // 2, y + hdr_h // 2,
+            _blit(surf, lbl, 17, C["text"], cx + col_w // 2, y + hdr_h // 2,
                   anchor="center")
 
     # Header row bottom separator
@@ -803,7 +841,7 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             hr   = GRID_START + hr_idx
             ap   = "am" if hr < 12 else "pm"
             disp = hr if hr <= 12 else hr - 12
-            _blit(surf, f"{disp}{ap}", 11, C["subtext"],
+            _blit(surf, f"{disp}{ap}", 15, C["subtext"],
                   x + LABEL_W - 4, yy + 2, anchor="topright")
 
     for d in range(1, num_days):
@@ -811,7 +849,7 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         pygame.draw.line(surf, C["border"], (cx, y + hdr_h), (cx, y + h))
 
     # All-day event bars — spanning multiple columns when the event crosses day boundaries.
-    fnt_ad = _font(11)
+    fnt_ad = _font(14)
     for ev, col_s, col_e, row in ad_placed:
         ex  = x + LABEL_W + col_s * col_w + 2
         ew  = (col_e - col_s) * col_w - 4
@@ -859,12 +897,12 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             sheen = pygame.Surface((ev_w - 2, sh_h), pygame.SRCALPHA)
             sheen.fill((255, 255, 255, 22))
             surf.blit(sheen, (int(ev_x) + 1, int(ev_y) + 1))
-        fnt = _font(11 if ev_h < 28 else 12)
+        fnt = _font(14 if ev_h < 40 else 16)
         surf.blit(fnt.render(_trunc(ev["title"], fnt, ev_w - 6), True, (255, 255, 255)),
                   (ev_x + 6, ev_y + 2))
-        if ev_h >= 26:
-            t2 = _font(10).render(ev["start"].strftime("%-I:%M %p"), True, (220, 225, 240))
-            surf.blit(t2, (ev_x + 6, ev_y + 14))
+        if ev_h >= 40:
+            t2 = _font(13).render(ev["start"].strftime("%-I:%M %p"), True, (220, 225, 240))
+            surf.blit(t2, (ev_x + 6, ev_y + 20))
 
     # now-line is intentionally omitted here — drawn as an overlay in main()
     return allday_h
@@ -890,7 +928,7 @@ def _draw_nowline(screen: pygame.Surface, C: dict,
 
     grid_hours = GRID_END - GRID_START
     col_w      = (grid_w - LABEL_W) // num_days
-    hdr_h      = 24
+    hdr_h      = 32
     grid_top   = grid_y + hdr_h + allday_h
     usable_h   = grid_h - hdr_h - allday_h
     row_h      = usable_h / grid_hours
@@ -960,11 +998,11 @@ def _draw_footer(surf: pygame.Surface, C: dict, W: int, surf_H: int,
     pygame.draw.rect(surf, C["footer"], (0, fy, W, FOOTER_H))
     pygame.draw.line(surf, C["border"], (0, fy), (W, fy))
     my = fy + FOOTER_H // 2
-    _blit(surf, f"{ip}  {host}", 12, C["subtext"], 8, my, anchor="midleft")
-    _blit(surf, label, 13, C["subtext"], W // 2, my, anchor="center")
+    _blit(surf, f"{ip}  {host}", 14, C["subtext"], 8, my, anchor="midleft")
+    _blit(surf, label, 15, C["subtext"], W // 2, my, anchor="center")
     cpu = sysinfo.get("cpu", "--")
     ram = sysinfo.get("ram", "--")
-    _blit(surf, f"CPU {cpu}  RAM {ram}", 12, C["subtext"], W - 8, my, anchor="midright")
+    _blit(surf, f"CPU {cpu}  RAM {ram}", 14, C["subtext"], W - 8, my, anchor="midright")
 
 
 # ════════════════════════════════════════════════════════════════════════════

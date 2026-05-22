@@ -99,11 +99,15 @@ async def get_forecast():
             (e for e in entries if "12:00:00" in e["dt_txt"] or "15:00:00" in e["dt_txt"]),
             entries[len(entries) // 2],
         )
+        raw_icon = rep["weather"][0]["icon"]
+        # Always use daytime variant — midday-UTC selection falls in early AM Pacific,
+        # yielding night codes (01n = moon) that look like circles on the display.
+        day_icon = raw_icon[:-1] + "d" if raw_icon.endswith("n") else raw_icon
         result.append({
             "date":        day_key,
             "high":        round(max(temps)),
             "low":         round(min(temps)),
-            "icon":        rep["weather"][0]["icon"],
+            "icon":        day_icon,
             "description": rep["weather"][0]["description"].title(),
         })
 

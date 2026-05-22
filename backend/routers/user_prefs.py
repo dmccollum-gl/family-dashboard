@@ -6,6 +6,11 @@ from typing import List
 router = APIRouter()
 
 
+def _normalize_calendars(raw: list) -> list:
+    """Convert legacy ["id"] entries to [{"id": ..., "color": null}] objects."""
+    return [c if isinstance(c, dict) else {"id": c, "color": None} for c in (raw or [])]
+
+
 @router.get("/{email}")
 def get_user_prefs(email: str, db: Session = Depends(get_db)):
     prefs = db.get(UserPrefs, email)
@@ -15,7 +20,7 @@ def get_user_prefs(email: str, db: Session = Depends(get_db)):
         "email":               prefs.email,
         "display_name":        prefs.display_name or "",
         "display_color":       prefs.display_color or "#1976d2",
-        "selected_calendars":  prefs.selected_calendars or [],
+        "selected_calendars":  _normalize_calendars(prefs.selected_calendars),
     }
 
 

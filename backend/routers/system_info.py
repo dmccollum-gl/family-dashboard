@@ -21,5 +21,8 @@ def get_system_info():
     fqdn = socket.getfqdn(hostname)
     if fqdn.endswith(".arpa") or fqdn == ip:
         fqdn = hostname
+    # Bare hostnames on Pi use mDNS (.local); add suffix so the URL is usable.
+    if "." not in fqdn:
+        fqdn = fqdn + ".local"
 
     return {"ip": ip, "fqdn": fqdn}

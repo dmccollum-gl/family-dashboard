@@ -1,0 +1,16 @@
+[Unit]
+Description=Dashboard first-boot setup (captive portal hotspot)
+After=NetworkManager.service
+Wants=NetworkManager.service
+Before=dashboard-backend.service dashboard-display.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/dashboard/setup-mode.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dashboard-setup
+
+[Install]
+WantedBy=multi-user.target

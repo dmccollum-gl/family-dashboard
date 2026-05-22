@@ -1,3 +1,5 @@
+import asyncio
+import time
 from fastapi import APIRouter, HTTPException
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
@@ -8,6 +10,18 @@ from database import SessionLocal, UserPrefs
 router = APIRouter()
 
 ENV_PATH = Path(__file__).parent.parent / ".env"
+
+# In-memory cache + lock for /events — prevents concurrent fetches from all hitting Google.
+_events_cache: dict = {"data": None, "ts": 0.0}
+_events_lock: asyncio.Lock | None = None  # created lazily (can't create at module import time)
+_CACHE_TTL = 90  # seconds
+
+
+def _get_events_lock() -> asyncio.Lock:
+    global _events_lock
+    if _events_lock is None:
+        _events_lock = asyncio.Lock()
+    return _events_lock
 
 
 def _read_env() -> dict:
@@ -25,7 +39,7 @@ def _now_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
-def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
+async def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
     """Return a valid access token, refreshing via refresh_token if needed."""
     now_ms    = _now_ms()
     buffer_ms = 5 * 60 * 1000
@@ -42,9 +56,8 @@ def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
         return None
 
     try:
-        # Use httpx (verify=False) to bypass macOS Python SSL cert issues
-        with httpx.Client(verify=False, timeout=10) as client:
-            res = client.post("https://oauth2.googleapis.com/token", data={
+        async with httpx.AsyncClient(verify=False, timeout=10) as client:
+            res = await client.post("https://oauth2.googleapis.com/token", data={
                 "grant_type":    "refresh_token",
                 "refresh_token": user.refresh_token,
                 "client_id":     client_id,
@@ -59,16 +72,18 @@ def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
         if not new_token:
             return None
 
-        db = SessionLocal()
-        try:
-            p = db.get(UserPrefs, user.email)
-            if p:
-                p.access_token = new_token
-                p.token_expiry = expiry_ms
-                db.commit()
-        finally:
-            db.close()
+        def _update_db():
+            db = SessionLocal()
+            try:
+                p = db.get(UserPrefs, user.email)
+                if p:
+                    p.access_token = new_token
+                    p.token_expiry = expiry_ms
+                    db.commit()
+            finally:
+                db.close()
 
+        await asyncio.to_thread(_update_db)
         return new_token
     except Exception:
         return None
@@ -76,79 +91,105 @@ def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
 
 @router.get("/events")
 async def get_all_events(start: str = None, end: str = None):
-    db = SessionLocal()
-    try:
-        users = db.query(UserPrefs).filter(UserPrefs.access_token.isnot(None)).all()
-    finally:
-        db.close()
+    use_cache = not start and not end
 
-    env = _read_env()
-    now = datetime.now(timezone.utc)
-    time_min = start or now.isoformat()
-    time_max = end   or (now + timedelta(days=7)).isoformat()
+    # Fast path: return cached result without acquiring lock.
+    if use_cache and _events_cache["data"] is not None:
+        if time.monotonic() - _events_cache["ts"] < _CACHE_TTL:
+            return _events_cache["data"]
 
-    all_events   = []
-    expired_users = []
+    # Serialize concurrent fetches: second caller waits, then hits the cache the
+    # first caller just populated — avoids duplicate Google API bursts.
+    async with _get_events_lock():
+        if use_cache and _events_cache["data"] is not None:
+            if time.monotonic() - _events_cache["ts"] < _CACHE_TTL:
+                return _events_cache["data"]
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        for user in users:
-            token = _get_valid_token(user, env)
-            if not token:
-                expired_users.append(user.display_name or user.email)
-                continue
+        db = SessionLocal()
+        try:
+            users = db.query(UserPrefs).filter(UserPrefs.access_token.isnot(None)).all()
+        finally:
+            db.close()
 
-            cal_ids = user.selected_calendars or [user.email]
+        env = _read_env()
+        now = datetime.now(timezone.utc)
+        # Fetch one week back so timed events on past days of the current view are visible.
+        week_ago = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+        time_min = start or week_ago.isoformat()
+        time_max = end   or (now + timedelta(days=8)).isoformat()
 
-            # Fetch calendar list once per user to get display names
-            cal_names = {}
-            try:
-                list_res = await client.get(
-                    "https://www.googleapis.com/calendar/v3/users/me/calendarList",
-                    params={"maxResults": "250"},
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                if list_res.status_code == 200:
-                    for cal in list_res.json().get("items", []):
-                        cal_names[cal["id"]] = cal.get("summaryOverride") or cal.get("summary") or cal["id"]
-            except Exception:
-                pass
+        all_events    = []
+        expired_users = []
 
-            for cal_id in cal_ids:
-                cal_name = cal_names.get(cal_id, cal_id)
-                try:
-                    res = await client.get(
-                        f"https://www.googleapis.com/calendar/v3/calendars/{quote(cal_id, safe='')}/events",
-                        params={
-                            "timeMin":      time_min,
-                            "timeMax":      time_max,
-                            "singleEvents": "true",
-                            "orderBy":      "startTime",
-                            "maxResults":   "250",
-                        },
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-                    if res.status_code != 200:
-                        continue
-                    for ev in res.json().get("items", []):
-                        if ev.get("status") == "cancelled":
-                            continue
-                        start   = ev.get("start", {})
-                        end     = ev.get("end",   {})
-                        all_day = "date" in start and "dateTime" not in start
-                        all_events.append({
-                            "id":           ev["id"] + cal_id,
-                            "title":        ev.get("summary", "(no title)"),
-                            "start":        start.get("dateTime") or start.get("date"),
-                            "end":          end.get("dateTime")   or end.get("date"),
-                            "allDay":       all_day,
-                            "color":        user.display_color or "#1976d2",
-                            "userName":     user.display_name  or user.email,
-                            "calendarName": cal_name,
-                        })
-                except Exception:
+        async with httpx.AsyncClient(timeout=10) as client:
+            for user in users:
+                token = await _get_valid_token(user, env)
+                if not token:
+                    expired_users.append(user.display_name or user.email)
                     continue
 
-    return {"events": all_events, "expired_users": expired_users}
+                # Normalize selected_calendars: support both legacy ["id"] and new [{"id","color"}] formats.
+                raw_cals = user.selected_calendars or [user.email]
+                cal_configs = [
+                    c if isinstance(c, dict) else {"id": c, "color": None}
+                    for c in raw_cals
+                ]
+
+                cal_names = {}
+                try:
+                    list_res = await client.get(
+                        "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+                        params={"maxResults": "250"},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    if list_res.status_code == 200:
+                        for cal in list_res.json().get("items", []):
+                            cal_names[cal["id"]] = cal.get("summaryOverride") or cal.get("summary") or cal["id"]
+                except Exception:
+                    pass
+
+                for cfg in cal_configs:
+                    cal_id    = cfg["id"]
+                    cal_color = cfg.get("color") or user.display_color or "#1976d2"
+                    cal_name  = cal_names.get(cal_id, cal_id)
+                    try:
+                        res = await client.get(
+                            f"https://www.googleapis.com/calendar/v3/calendars/{quote(cal_id, safe='')}/events",
+                            params={
+                                "timeMin":      time_min,
+                                "timeMax":      time_max,
+                                "singleEvents": "true",
+                                "orderBy":      "startTime",
+                                "maxResults":   "250",
+                            },
+                            headers={"Authorization": f"Bearer {token}"},
+                        )
+                        if res.status_code != 200:
+                            continue
+                        for ev in res.json().get("items", []):
+                            if ev.get("status") == "cancelled":
+                                continue
+                            ev_start = ev.get("start", {})
+                            ev_end   = ev.get("end",   {})
+                            all_day  = "date" in ev_start and "dateTime" not in ev_start
+                            all_events.append({
+                                "id":           ev["id"] + cal_id,
+                                "title":        ev.get("summary", "(no title)"),
+                                "start":        ev_start.get("dateTime") or ev_start.get("date"),
+                                "end":          ev_end.get("dateTime")   or ev_end.get("date"),
+                                "allDay":       all_day,
+                                "color":        cal_color,
+                                "userName":     user.display_name  or user.email,
+                                "calendarName": cal_name,
+                            })
+                    except Exception:
+                        continue
+
+        result = {"events": all_events, "expired_users": expired_users}
+        if use_cache:
+            _events_cache["data"] = result
+            _events_cache["ts"]   = time.monotonic()
+        return result
 
 
 @router.get("/list/{email}")
@@ -163,7 +204,7 @@ async def get_calendar_list(email: str):
         raise HTTPException(status_code=404, detail="User not found.")
 
     env   = _read_env()
-    token = _get_valid_token(user, env)
+    token = await _get_valid_token(user, env)
     if not token:
         raise HTTPException(status_code=401, detail="Token expired — please sign in again.")
 
@@ -191,7 +232,7 @@ async def unsubscribe_calendar(email: str, calendar_id: str):
         raise HTTPException(status_code=404, detail="User not found.")
 
     env   = _read_env()
-    token = _get_valid_token(user, env)
+    token = await _get_valid_token(user, env)
     if not token:
         raise HTTPException(status_code=401, detail="Token expired — please sign in again.")
 
@@ -227,7 +268,7 @@ async def subscribe_calendar(email: str, body: dict):
         raise HTTPException(status_code=404, detail="User not found.")
 
     env   = _read_env()
-    token = _get_valid_token(user, env)
+    token = await _get_valid_token(user, env)
     if not token:
         raise HTTPException(status_code=401, detail="Token expired — please sign in again.")
 

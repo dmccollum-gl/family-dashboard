@@ -200,34 +200,34 @@ function WeatherWidget() {
   };
 
   return (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+    <Box sx={{ display: "flex", alignItems: "center", gap: 1.25 }}>
 
       {/* Current conditions */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
         <img
           src={`https://openweathermap.org/img/wn/${current.icon}@2x.png`}
           alt={current.description}
-          style={{ width: 64, height: 64 }}
+          style={{ width: 58, height: 58 }}
         />
         <Box>
-          <Typography sx={{ fontSize: "2.2rem", fontWeight: 700, lineHeight: 1, color: "primary.main", fontVariantNumeric: "tabular-nums" }}>
+          <Typography sx={{ fontSize: "2rem", fontWeight: 700, lineHeight: 1, color: "primary.main", fontVariantNumeric: "tabular-nums" }}>
             {current.temp}{current.unit_symbol}
           </Typography>
-          <Typography variant="body2" color="text.secondary" fontWeight={500}>{current.description}</Typography>
+          <Typography sx={{ fontSize: "0.79rem" }} color="text.secondary" fontWeight={500}>{current.description}</Typography>
           <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
             H: {high}{current.unit_symbol} · L: {low}{current.unit_symbol}
           </Typography>
           <Box sx={{ display: "flex", gap: 0.75, mt: 0.25 }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
-              <ThermostatIcon sx={{ fontSize: 12, color: "text.disabled" }} />
+              <ThermostatIcon sx={{ fontSize: 11, color: "text.disabled" }} />
               <Typography variant="caption" color="text.disabled">Feels {current.feels_like}{current.unit_symbol}</Typography>
             </Box>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
-              <WaterDropIcon sx={{ fontSize: 12, color: "text.disabled" }} />
+              <WaterDropIcon sx={{ fontSize: 11, color: "text.disabled" }} />
               <Typography variant="caption" color="text.disabled">{current.humidity}%</Typography>
             </Box>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
-              <AirIcon sx={{ fontSize: 12, color: "text.disabled" }} />
+              <AirIcon sx={{ fontSize: 11, color: "text.disabled" }} />
               <Typography variant="caption" color="text.disabled">{current.wind_speed} {current.wind_unit}</Typography>
             </Box>
           </Box>
@@ -236,21 +236,21 @@ function WeatherWidget() {
 
       {/* 4-day forecast strip */}
       {futureDays.length > 0 && (
-        <Box sx={{ display: "flex", gap: 0.5, borderLeft: "1px solid", borderColor: "divider", pl: 1.5 }}>
+        <Box sx={{ display: "flex", gap: 0.5, borderLeft: "1px solid", borderColor: "divider", pl: 1.25 }}>
           {futureDays.map(day => (
-            <Box key={day.date} sx={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 44 }}>
-              <Typography sx={{ fontSize: "0.65rem", fontWeight: 700, color: "text.secondary", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            <Box key={day.date} sx={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 40 }}>
+              <Typography sx={{ fontSize: "0.59rem", fontWeight: 700, color: "text.secondary", textTransform: "uppercase", letterSpacing: "0.06em" }}>
                 {dayLabel(day.date)}
               </Typography>
               <img
                 src={`https://openweathermap.org/img/wn/${day.icon}@2x.png`}
                 alt={day.description}
-                style={{ width: 40, height: 40 }}
+                style={{ width: 36, height: 36 }}
               />
-              <Typography sx={{ fontSize: "0.7rem", fontWeight: 700, lineHeight: 1.2, color: "text.primary", fontVariantNumeric: "tabular-nums" }}>
+              <Typography sx={{ fontSize: "0.63rem", fontWeight: 700, lineHeight: 1.2, color: "text.primary", fontVariantNumeric: "tabular-nums" }}>
                 {day.high}°
               </Typography>
-              <Typography sx={{ fontSize: "0.65rem", color: "text.disabled", fontVariantNumeric: "tabular-nums" }}>
+              <Typography sx={{ fontSize: "0.59rem", color: "text.disabled", fontVariantNumeric: "tabular-nums" }}>
                 {day.low}°
               </Typography>
             </Box>
@@ -306,20 +306,26 @@ function NewsWidget() {
 
   const item = items[idx];
   return (
-    <Box sx={{ flexGrow: 1, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", gap: 1, px: 1 }}>
+    <Box sx={{ flexGrow: 1, overflow: "hidden", display: "flex", alignItems: "flex-start", justifyContent: "center", gap: 1, px: 1 }}>
       {item.source && (
         <Chip label={item.source} size="small" color="primary" variant="outlined"
-          sx={{ flexShrink: 0, fontSize: "0.7rem", height: 20 }} />
+          sx={{ flexShrink: 0, fontSize: "0.7rem", height: 20, mt: "4px" }} />
       )}
-      <Typography noWrap sx={{
-        opacity: visible ? 1 : 0,
-        transition: "opacity 0.35s ease",
-        fontWeight: 500,
-        fontSize: "1.35rem",
-        cursor: item.link ? "pointer" : "default",
-        "&:hover": item.link ? { textDecoration: "underline" } : {},
-      }}
+      <Typography
         onClick={() => item.link && window.open(item.link, "_blank")}
+        sx={{
+          opacity: visible ? 1 : 0,
+          transition: "opacity 0.35s ease",
+          fontWeight: 500,
+          fontSize: "1.55rem",
+          lineHeight: 1.35,
+          display: "-webkit-box",
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+          cursor: item.link ? "pointer" : "default",
+          "&:hover": item.link ? { textDecoration: "underline" } : {},
+        }}
       >
         {item.title}
       </Typography>
@@ -714,13 +720,11 @@ function Footer({ view, baseDate, setView, setBaseDate }) {
             {mode === "light" ? <DarkModeIcon fontSize="small" /> : mode === "dark" ? <BrightnessAutoIcon fontSize="small" /> : <LightModeIcon fontSize="small" />}
           </IconButton>
         </Tooltip>
-        <Tooltip title="Admin settings">
-          <Typography variant="caption" color="text.disabled"
-            onClick={() => navigate("/admin")}
-            sx={{ cursor: "pointer", "&:hover": { color: "text.secondary" }, px: 0.5 }}>
-            Admin
-          </Typography>
-        </Tooltip>
+        <Button size="small" variant="text"
+          sx={{ py: 0.25, px: 1, fontSize: "0.7rem", minWidth: 0, color: "text.disabled" }}
+          onClick={() => navigate("/admin")}>
+          Admin
+        </Button>
       </Box>
     </Box>
   );
@@ -738,8 +742,14 @@ export default function Dashboard() {
       height: "100vh", display: "flex", flexDirection: "column",
       bgcolor: "background.default", p: 1.5, gap: 1.5, overflow: "hidden",
     }}>
-      {/* Top bar */}
-      <Paper variant="outlined" sx={{ px: 2, py: 1, display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+      {/* Top bar — grid so RSS column cannot affect clock or weather columns */}
+      <Paper variant="outlined" sx={{
+        px: 2, height: 96, flexShrink: 0, overflow: "hidden",
+        display: "grid",
+        gridTemplateColumns: "auto 1fr auto auto",
+        alignItems: "center",
+        gap: 2,
+      }}>
         <ClockWidget />
         <NewsWidget />
         <WeatherWidget />

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from pathlib import Path
-import json
+import json, subprocess, threading
 
 router = APIRouter()
 
@@ -108,3 +108,60 @@ def save_rss_config(body: dict):
     ]
     _write_config({"rss_feeds": cleaned})
     return {"status": "saved", "count": len(cleaned)}
+
+
+# ── Display settings ───────────────────────────────────────────────────────────
+
+VALID_THEMES = {"auto", "light", "dark"}
+VALID_VIEWS  = {"day", "week", "2week", "month", "rolling"}
+
+
+@router.get("/display")
+def get_display_config():
+    cfg = _read_config()
+    return {
+        "theme": cfg.get("display_theme", "auto"),
+        "view":  cfg.get("display_view",  "week"),
+    }
+
+
+@router.put("/display")
+def save_display_config(body: dict):
+    updates = {}
+    if body.get("theme") in VALID_THEMES:
+        updates["display_theme"] = body["theme"]
+    if body.get("view") in VALID_VIEWS:
+        updates["display_view"] = body["view"]
+    if updates:
+        _write_config(updates)
+    return {"status": "saved"}
+
+
+# ── Restart ────────────────────────────────────────────────────────────────────
+
+def _after(delay: float, fn):
+    import time
+    time.sleep(delay)
+    fn()
+
+
+@router.post("/restart/backend")
+def restart_backend():
+    threading.Thread(
+        target=_after,
+        args=(1.0, lambda: subprocess.run(["sudo", "systemctl", "restart", "dashboard-backend"], check=False)),
+        daemon=True,
+    ).start()
+    return {"status": "restarting"}
+
+
+@router.post("/restart/display")
+def restart_display():
+    # display.py runs as the same user (dashboard), so pkill works without sudo.
+    # The .bash_profile while-loop restarts it automatically after 5 s.
+    threading.Thread(
+        target=_after,
+        args=(1.0, lambda: subprocess.run(["pkill", "-f", "display.py"], check=False)),
+        daemon=True,
+    ).start()
+    return {"status": "restarting"}

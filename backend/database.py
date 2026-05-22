@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, JSON, BigInteger, text
+from sqlalchemy import create_engine, Column, String, JSON, BigInteger, Integer, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 engine = create_engine("sqlite:///./dashboard.db", connect_args={"check_same_thread": False})
@@ -11,13 +11,15 @@ class Base(DeclarativeBase):
 
 class UserPrefs(Base):
     __tablename__ = "user_prefs"
-    email              = Column(String, primary_key=True)
-    display_name       = Column(String, default="")
-    display_color      = Column(String, default="#1976d2")
-    selected_calendars = Column(JSON, default=list)
-    access_token       = Column(String, default=None)
-    refresh_token      = Column(String, default=None)
+    email              = Column(String,     primary_key=True)
+    display_name       = Column(String,     default="")
+    display_color      = Column(String,     default="#1976d2")
+    selected_calendars = Column(JSON,       default=list)
+    access_token       = Column(String,     default=None)
+    refresh_token      = Column(String,     default=None)
     token_expiry       = Column(BigInteger, default=None)  # ms since epoch
+    role               = Column(String,     default="user")  # owner | admin | user
+    blocked            = Column(Integer,    default=0)       # 0 = active, 1 = blocked
 
 
 def init_db():
@@ -28,7 +30,13 @@ def init_db():
 def _migrate():
     """Add columns introduced after initial schema creation."""
     with engine.connect() as conn:
-        for col in ("access_token TEXT", "refresh_token TEXT", "token_expiry INTEGER"):
+        for col in (
+            "access_token TEXT",
+            "refresh_token TEXT",
+            "token_expiry INTEGER",
+            "role TEXT DEFAULT 'user'",
+            "blocked INTEGER DEFAULT 0",
+        ):
             try:
                 conn.execute(text(f"ALTER TABLE user_prefs ADD COLUMN {col}"))
                 conn.commit()

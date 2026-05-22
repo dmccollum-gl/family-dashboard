@@ -11,6 +11,7 @@ import routers.weather as weather_router
 import routers.rss as rss_router
 import routers.calendar as calendar_router
 import routers.system_info as system_info_router
+import routers.setup as setup_router
 
 app = FastAPI(title="Dashboard")
 
@@ -32,8 +33,9 @@ app.include_router(weather_router.router,   prefix="/api/weather",    tags=["Wea
 app.include_router(rss_router.router,       prefix="/api/rss",        tags=["RSS"])
 app.include_router(calendar_router.router,  prefix="/api/calendar",   tags=["Calendar"])
 app.include_router(system_info_router.router, prefix="/api/system",   tags=["System"])
+app.include_router(setup_router.router,       prefix="/api/setup",    tags=["Setup"])
 
 
 @app.get("/api/health")
-def health():
+async def health():
     return {"status": "ok"}

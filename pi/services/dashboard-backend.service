@@ -1,5 +1,5 @@
 [Unit]
-Description=Family Dashboard — FastAPI Backend
+Description=Family Dashboard - FastAPI Backend
 Documentation=https://github.com/dmccollum-gl/family-dashboard
 After=network-online.target
 Wants=network-online.target
@@ -17,7 +17,7 @@ Environment="PYTHONUNBUFFERED=1"
 ExecStart=/opt/dashboard/venv/bin/uvicorn main:app \
     --host 0.0.0.0 \
     --port 8001 \
-    --loop uvloop \
+    --loop auto \
     --workers 1 \
     --log-level warning
 
@@ -27,8 +27,8 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=dashboard-backend
 
-# Harden slightly
-NoNewPrivileges=yes
+# NoNewPrivileges intentionally omitted: it blocks sudo's setuid escalation,
+# which prevents uvicorn from calling pi-setup-apply.sh during WiFi setup.
 PrivateTmp=yes
 
 [Install]

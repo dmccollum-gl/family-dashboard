@@ -20,14 +20,19 @@ apt-get update -qq
 info "Installing system dependencies..."
 apt-get install -y -qq \
   python3 python3-pip python3-venv python3-dev \
+  python3-pygame \
   libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsdl2-mixer-dev \
+  libdrm2 libgbm1 \
   libopenjp2-7 libtiff6 libfreetype6 \
   sqlite3 libsqlite3-dev \
   fonts-dejavu-core fonts-liberation \
   nginx \
   git curl wget ca-certificates \
   dnsutils iputils-ping \
-  raspi-config
+  iw wireless-regdb \
+  libseat1 \
+  raspi-config \
+  dnsmasq-base
 
 # Clean up apt cache to save image space
 apt-get clean
@@ -46,21 +51,39 @@ for grp in video render audio gpio; do
 done
 
 # -- Python virtual environment ------------------------------------------------
-info "Creating Python venv..."
-python3 -m venv "$VENV"
+# Always create the venv using the Pi OS's own Python so the version matches.
+# Wheels were pre-downloaded in the Docker stage and staged at /tmp/pi-wheels.
+# --system-site-packages lets the venv fall back to apt-installed packages
+# (especially python3-pygame) if any pip install fails. Pip-installed versions
+# always take priority over system packages inside the venv.
+info "Creating Python venv with $(python3 --version)..."
+python3 -m venv --system-site-packages "$VENV"
+"$VENV/bin/pip" install --quiet --upgrade pip wheel
 
-info "Installing Python packages..."
-"$VENV/bin/pip" install --upgrade --quiet pip wheel
+WHEELS_DIR=/tmp/pi-wheels
+if [ -d "$WHEELS_DIR" ] && [ "$(ls $WHEELS_DIR/*.whl 2>/dev/null | wc -l)" -gt 0 ]; then
+  info "Installing pre-staged wheels (pygame, uvloop, httptools, qrcode)..."
+  # Install only the packages that are actually pre-staged -- do not use --no-index
+  # for requirements.txt because only a subset of packages are staged.
+  "$VENV/bin/pip" install --quiet --prefer-binary --no-index --find-links "$WHEELS_DIR" \
+    pygame uvloop httptools qrcode 2>/dev/null || true
+fi
 
-# Backend requirements from the copied source
-"$VENV/bin/pip" install --quiet \
+# Always install requirements.txt from PyPI (covers staged and non-staged paths).
+# Packages already installed from wheels are skipped automatically.
+info "Installing Python app requirements from PyPI..."
+"$VENV/bin/pip" install --quiet --prefer-binary \
+  --timeout 180 --retries 5 \
   -r "$APP_DIR/backend/requirements.txt"
 
-# pygame-ce has a prebuilt arm64 wheel -- no SDL2 compile needed
-"$VENV/bin/pip" install --quiet pygame-ce
-
-# Swap default uvicorn loop to uvloop for better throughput on Pi
-"$VENV/bin/pip" install --quiet uvloop httptools
+# -- Verify pygame is importable (fail loud rather than ship a broken image) --
+if "$VENV/bin/python3" -c "import pygame; print('  pygame', pygame.__version__, 'OK')" 2>/dev/null; then
+  info "pygame verified in venv."
+else
+  info "pip pygame not in venv -- system python3-pygame will be used (via --system-site-packages)."
+  "$VENV/bin/python3" -c "import pygame; print('  pygame', pygame.__version__, 'OK (system)')" || \
+    { info "ERROR: pygame unavailable in venv and system -- display will not work!"; }
+fi
 
 # -- File ownership ------------------------------------------------------------
 info "Setting file ownership..."
@@ -77,9 +100,20 @@ server {
     root /opt/dashboard/frontend-dist;
     index index.html;
 
+    # Never cache index.html -- captive portal browsers must get a fresh copy
+    location = /index.html {
+        try_files $uri =404;
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+        add_header Pragma "no-cache";
+        expires 0;
+    }
+
     # Serve static React build
     location / {
         try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+        add_header Pragma "no-cache";
+        expires 0;
     }
 
     # Proxy API calls to FastAPI backend
@@ -94,18 +128,72 @@ NGINX
 ln -sf /etc/nginx/sites-available/dashboard /etc/nginx/sites-enabled/dashboard
 rm -f /etc/nginx/sites-enabled/default
 
-# -- udev rule: allow render group to access DRI devices (KMS/DRM) -------------
-info "Adding udev rule for DRI access..."
+# -- udev rules: framebuffer + DRM access for dashboard user ------------------
+info "Adding udev rules for display access..."
 cat > /etc/udev/rules.d/99-dashboard-dri.rules << 'UDEV'
-SUBSYSTEM=="drm", GROUP="render", MODE="0660"
+SUBSYSTEM=="drm", KERNEL=="card*",    GROUP="video",  MODE="0660"
 SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0660"
+SUBSYSTEM=="graphics", KERNEL=="fb*", GROUP="video",  MODE="0660"
 UDEV
+
+# -- Setup scripts (captive portal + network apply helper) --------------------
+info "Installing setup scripts..."
+cp /tmp/setup-mode.sh      "$APP_DIR/setup-mode.sh"
+cp /tmp/pi-setup-apply.sh  "$APP_DIR/pi-setup-apply.sh"
+chmod +x "$APP_DIR/setup-mode.sh" "$APP_DIR/pi-setup-apply.sh"
+
+# -- sudoers rules: setup helper + service restarts ---------------------------
+info "Adding sudoers rules..."
+cat > /etc/sudoers.d/dashboard-setup << 'SUDOERS'
+Defaults:dashboard !requiretty
+dashboard ALL=(ALL) NOPASSWD: /opt/dashboard/pi-setup-apply.sh
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dashboard-backend
+SUDOERS
+chmod 440 /etc/sudoers.d/dashboard-setup
+
+# -- Copy setup service --------------------------------------------------------
+cp /tmp/dashboard-setup.service /etc/systemd/system/dashboard-setup.service
+
+# -- Disable Pi OS first-boot wizard ------------------------------------------
+# Pi OS Bookworm runs userconfig.service on first boot to prompt for a user/
+# password. We manage our own user, so suppress it entirely.
+info "Disabling first-boot wizard..."
+systemctl disable userconfig.service            2>/dev/null || true
+systemctl disable pi-gen-first-boot-wizard      2>/dev/null || true
+# Remove the flag files that trigger the wizard
+rm -f /etc/xdg/autostart/piwiz.desktop
+rm -f /usr/share/applications/piwiz.desktop
+# Mark the Pi OS user-config as already done
+mkdir -p /etc/userconf-pi && touch /etc/userconf-pi/done
+
+# -- Enable SSH for remote diagnostics ----------------------------------------
+info "Enabling SSH..."
+systemctl enable ssh.service 2>/dev/null || systemctl enable sshd.service 2>/dev/null || true
+# Touch the flag file Pi OS checks for SSH on first boot
+touch /boot/firmware/ssh 2>/dev/null || touch /boot/ssh 2>/dev/null || true
+# Set a password for the dashboard user so SSH login works
+echo "dashboard:dashboard" | chpasswd
+# Explicitly allow password auth  --  Pi OS Bookworm sshd_config.d/ can override to "no"
+mkdir -p /etc/ssh/sshd_config.d
+echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/10-dashboard.conf
 
 # -- systemd services ----------------------------------------------------------
 info "Enabling systemd services..."
+systemctl enable dashboard-setup.service
 systemctl enable dashboard-backend.service
-systemctl enable dashboard-display.service
+# Statically enable getty@tty1 so systemd-getty-generator doesn't need to
+# discover it at runtime -- required on Pi OS Bookworm with vc4-kms-v3d where
+# the generator skips tty1 during early boot.
+systemctl enable getty@tty1.service
+# dashboard-display is launched from the autologin shell (see .bash_profile below)
+# so we don't enable it as a service  --  it would run without a logind session and
+# SDL kmsdrm would fail to acquire DRM master.
+systemctl disable dashboard-display.service 2>/dev/null || true
 systemctl enable nginx.service
+
+# wpa_supplicant conflicts with NetworkManager's built-in wifi management.
+# NM manages its own wpa_supplicant internally; the standalone service must be off.
+systemctl disable wpa_supplicant.service 2>/dev/null || true
 
 # -- Pi hardware configuration (boot/config.txt / firmware config) -------------
 info "Configuring Pi firmware..."
@@ -125,8 +213,8 @@ add_config() {
   fi
 }
 
-# GPU memory -- 128 MB is a reasonable balance for display.py on Pi Zero 2 W
-add_config gpu_mem 128
+# GPU memory -- 16 MB frees ~112 MB of RAM for uvicorn + display.py co-existence
+add_config gpu_mem 16
 # KMS/DRM video driver (used by SDL_VIDEODRIVER=kmsdrm)
 grep -q "vc4-kms-v3d" "$CONFIG" || echo "dtoverlay=vc4-kms-v3d" >> "$CONFIG"
 # Disable the rainbow splash screen on boot
@@ -160,43 +248,74 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin ${DASH_USER} --noclear %I \$TERM
 EOF
 
-# -- First-boot expansion service ---------------------------------------------
-# Runs once on first boot to resize the root filesystem to fill the SD card
-info "Adding first-boot resize service..."
-cat > /etc/systemd/system/dashboard-firstboot.service << 'FIRSTBOOT'
-[Unit]
-Description=First-boot filesystem expansion
-After=local-fs.target
-ConditionPathExists=/opt/dashboard/.firstboot-pending
-DefaultDependencies=no
-Before=sysinit.target
+# -- Kiosk display launcher via login shell -----------------------------------
+# Running display.py from .bash_profile gives it a real logind session on tty1,
+# which is required for SDL kmsdrm to acquire DRM master. A plain systemd
+# service (no active VT) cannot become KMS master on Pi OS Bookworm.
+info "Creating kiosk .bash_profile..."
+cat > /home/${DASH_USER}/.bash_profile << 'PROFILE'
+[ -f ~/.bashrc ] && . ~/.bashrc
 
-[Service]
-Type=oneshot
-ExecStart=/opt/dashboard/firstboot.sh
-RemainAfterExit=yes
+if [ "$(tty)" = "/dev/tty1" ]; then
+    # XDG_RUNTIME_DIR lets libseat talk to logind so SDL kmsdrm can acquire
+    # DRM master without root. systemd-logind creates this dir for active sessions
+    # but agetty autologin may race; ensure it exists before SDL opens.
+    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 0700 "$XDG_RUNTIME_DIR"
 
-[Install]
-WantedBy=sysinit.target
-FIRSTBOOT
+    # Pick whichever DRM card is readable (card0 on Pi Zero 2 W / Pi 3,
+    # card1 on Pi 4/5 where card0 is the audio device).
+    for _card in /dev/dri/card0 /dev/dri/card1; do
+        [ -r "$_card" ] && export SDL_VIDEO_KMSDRM_DEVICE="$_card" && break
+    done
 
-cat > "$APP_DIR/firstboot.sh" << 'FBSH'
-#!/bin/bash
-# Run once: expand root fs to fill the SD card
-ROOT_DEV=$(findmnt -n -o SOURCE /)
-DISK=$(lsblk -no PKNAME "$ROOT_DEV")
-PART_NUM=$(lsblk -no MAJ:MIN "$ROOT_DEV" | awk -F: '{print $2}')
-echo "Expanding root partition on /dev/$DISK..."
-parted -s /dev/$DISK resizepart 2 100% || true
-resize2fs "$ROOT_DEV" || true
-rm -f /opt/dashboard/.firstboot-pending
-echo "First-boot expansion complete."
-FBSH
-chmod +x "$APP_DIR/firstboot.sh"
-touch "$APP_DIR/.firstboot-pending"
-chown "$DASH_USER:$DASH_USER" "$APP_DIR/firstboot.sh"
+    export SDL_VIDEODRIVER=kmsdrm
+    export SDL_VIDEO_KMSDRM_ALLOW_MODESET=1
+    export SDL_RENDER_DRIVER=software
+    export SDL_AUDIODRIVER=dummy
+    export PYGAME_HIDE_SUPPORT_PROMPT=1
 
-systemctl enable dashboard-firstboot.service
+    # Wait for the backend API to be healthy before loading Pygame.
+    until curl -sf --max-time 5 http://127.0.0.1:8001/api/health >/dev/null 2>&1; do
+        sleep 5
+    done
+
+    # Don't start display.py while in setup mode (hotspot active).
+    # This prevents thread-pool saturation in uvicorn so the setup page
+    # stays responsive. Display.py only starts after WiFi is configured.
+    while true; do
+        STATUS=$(curl -sf --max-time 5 http://127.0.0.1:8001/api/setup/status 2>/dev/null)
+        echo "$STATUS" | grep -q '"setup_mode":false' && break
+        sleep 10
+    done
+    # Brief warm-up so uvicorn code pages are settled before Pygame loads.
+    sleep 15
+
+    cd /opt/dashboard/backend
+    while true; do
+        /opt/dashboard/venv/bin/python3 display.py --fullscreen 2>&1 \
+            | logger -t dashboard-display
+        RC=$?
+        logger -t dashboard-display "exited rc=$RC, restarting in 5s"
+        sleep 5
+    done
+fi
+PROFILE
+chown ${DASH_USER}:${DASH_USER} /home/${DASH_USER}/.bash_profile
+
+# -- Persistent journal logging -----------------------------------------------
+info "Enabling persistent journal..."
+mkdir -p /var/log/journal
+# journald requires setgid + systemd-journal group ownership to write here
+chown root:systemd-journal /var/log/journal 2>/dev/null || true
+chmod 2755 /var/log/journal
+systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+sed -i 's/^#\?Storage=.*/Storage=persistent/' /etc/systemd/journald.conf 2>/dev/null || \
+    echo -e "[Journal]\nStorage=persistent" >> /etc/systemd/journald.conf
+
+# WiFi is configured at runtime via the captive portal setup wizard.
+# No credentials are baked into the image  --  each customer enters their own.
 
 # -- Write example config if no config present --------------------------------
 if [ ! -f "$APP_DIR/backend/dashboard_config.json" ]; then
@@ -204,9 +323,21 @@ if [ ! -f "$APP_DIR/backend/dashboard_config.json" ]; then
      "$APP_DIR/backend/dashboard_config.json" 2>/dev/null || true
 fi
 
-# -- Hostname ------------------------------------------------------------------
-echo "family-dashboard" > /etc/hostname
-sed -i 's/127\.0\.1\.1.*/127.0.1.1\tfamily-dashboard/' /etc/hosts 2>/dev/null || \
-  echo "127.0.1.1 family-dashboard" >> /etc/hosts
+# -- WiFi regulatory domain (required for AP mode on Pi Zero 2 W) --------------
+# Without a country code the kernel refuses to start the AP radio.
+info "Setting WiFi country code..."
+raspi-config nonint do_wifi_country US 2>/dev/null || \
+    echo "REGDOMAIN=US" > /etc/default/crda
+
+# -- Disable cloud-init --------------------------------------------------------
+# Cloud-init is not needed  --  our setup wizard handles all first-boot config.
+# Leaving it enabled causes it to run on every boot and can interfere with NM.
+info "Disabling cloud-init..."
+touch /etc/cloud/cloud-init.disabled
+
+# -- Hostname (temporary  --  overwritten by pi-setup-apply.sh during setup) -----
+echo "dashboard-setup" > /etc/hostname
+sed -i 's/127\.0\.1\.1.*/127.0.1.1\tdashboard-setup/' /etc/hosts 2>/dev/null || \
+  echo "127.0.1.1 dashboard-setup" >> /etc/hosts
 
 info "Chroot setup finished."

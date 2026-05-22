@@ -3,16 +3,17 @@ import {
   Box, Typography, Paper, TextField, Button, Divider,
   ToggleButton, ToggleButtonGroup, IconButton, Alert,
   CircularProgress, Tooltip, InputAdornment, List, ListItem,
+  Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
-import AddIcon           from "@mui/icons-material/Add";
-import DeleteIcon        from "@mui/icons-material/Delete";
 import SaveIcon          from "@mui/icons-material/Save";
 import VisibilityIcon    from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import LockIcon          from "@mui/icons-material/Lock";
 import CloudIcon         from "@mui/icons-material/Cloud";
-import RssFeedIcon       from "@mui/icons-material/RssFeed";
 import DashboardIcon     from "@mui/icons-material/Dashboard";
+import RestartAltIcon    from "@mui/icons-material/RestartAlt";
+import TvIcon            from "@mui/icons-material/Tv";
+import ReplayIcon        from "@mui/icons-material/Replay";
 import { useNavigate }   from "react-router-dom";
 import api               from "../../api/client";
 
@@ -173,68 +174,54 @@ function WeatherSettings() {
   );
 }
 
-function RssSettings() {
-  const [feeds,  setFeeds]  = useState([{ url: "", label: "" }]);
+function DisplaySettings() {
+  const [theme,  setTheme]  = useState("auto");
+  const [view,   setView]   = useState("week");
   const [saving, setSaving] = useState(false);
   const [msg,    setMsg]    = useState(null);
   const [error,  setError]  = useState(null);
 
   useEffect(() => {
-    api.get("/api/settings/rss").then(res => {
-      const loaded = res.data.feeds || [];
-      setFeeds(loaded.length > 0 ? loaded : [{ url: "", label: "" }]);
+    api.get("/api/settings/display").then(res => {
+      setTheme(res.data.theme || "auto");
+      setView(res.data.view  || "week");
     }).catch(() => {});
   }, []);
-
-  const updateFeed = (i, field, value) =>
-    setFeeds(prev => prev.map((f, idx) => idx === i ? { ...f, [field]: value } : f));
-  const addFeed    = () => setFeeds(prev => [...prev, { url: "", label: "" }]);
-  const removeFeed = (i) =>
-    setFeeds(prev => prev.length === 1 ? [{ url: "", label: "" }] : prev.filter((_, idx) => idx !== i));
 
   const handleSave = async () => {
     setSaving(true); setMsg(null); setError(null);
     try {
-      const res = await api.put("/api/settings/rss", { feeds });
-      setMsg(`Saved ${res.data.count} feed${res.data.count !== 1 ? "s" : ""}.`);
+      await api.put("/api/settings/display", { theme, view });
+      setMsg("Display settings saved. The Pi screen updates within 30 seconds.");
     } catch {
       setError("Failed to save.");
     } finally { setSaving(false); }
   };
 
   return (
-    <Section icon={<RssFeedIcon />} title="RSS News Feeds">
+    <Section icon={<TvIcon />} title="Pi Display">
       <Typography variant="body2" color="text.secondary">
-        Headlines rotate in the news ticker at the top of the dashboard.
-        The label is optional and appears as a source tag.
+        Controls the default colour theme and calendar view shown on the physical display.
+        Changes are picked up automatically — no restart needed.
       </Typography>
-      <List disablePadding sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-        {feeds.map((feed, i) => (
-          <ListItem key={i} disableGutters disablePadding>
-            <Box sx={{ display: "flex", gap: 1, width: "100%", alignItems: "flex-start" }}>
-              <TextField
-                label="Feed URL" size="small" sx={{ flex: 3 }}
-                value={feed.url} onChange={e => updateFeed(i, "url", e.target.value)}
-                placeholder="https://feeds.example.com/rss"
-              />
-              <TextField
-                label="Label (optional)" size="small" sx={{ flex: 1 }}
-                value={feed.label} onChange={e => updateFeed(i, "label", e.target.value)}
-                placeholder="e.g. AP News"
-              />
-              <Tooltip title="Remove">
-                <IconButton size="small" color="error" onClick={() => removeFeed(i)} sx={{ mt: 0.5 }}>
-                  <DeleteIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </Box>
-          </ListItem>
-        ))}
-      </List>
-      <Box>
-        <Button size="small" startIcon={<AddIcon />} onClick={addFeed} variant="outlined">
-          Add Feed
-        </Button>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
+        <Typography variant="body2" color="text.secondary" sx={{ minWidth: 50 }}>Theme:</Typography>
+        <ToggleButtonGroup size="small" exclusive value={theme}
+          onChange={(_, v) => { if (v) setTheme(v); }}>
+          <ToggleButton value="auto">Auto (sunrise/sunset)</ToggleButton>
+          <ToggleButton value="light">Light</ToggleButton>
+          <ToggleButton value="dark">Dark</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
+        <Typography variant="body2" color="text.secondary" sx={{ minWidth: 50 }}>View:</Typography>
+        <ToggleButtonGroup size="small" exclusive value={view}
+          onChange={(_, v) => { if (v) setView(v); }}>
+          <ToggleButton value="day">Day</ToggleButton>
+          <ToggleButton value="week">Week</ToggleButton>
+          <ToggleButton value="2week">2 Week</ToggleButton>
+          <ToggleButton value="month">Month</ToggleButton>
+        </ToggleButtonGroup>
       </Box>
       {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
@@ -242,9 +229,133 @@ function RssSettings() {
         <Button variant="contained"
           startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
           onClick={handleSave} disabled={saving}>
-          Save RSS Feeds
+          Save Display Settings
         </Button>
       </Box>
+    </Section>
+  );
+}
+
+function RestartSection() {
+  const [backendBusy, setBackendBusy] = useState(false);
+  const [displayBusy, setDisplayBusy] = useState(false);
+  const [msg,         setMsg]         = useState(null);
+  const [error,       setError]       = useState(null);
+
+  const restart = async (target) => {
+    const setB = target === "backend" ? setBackendBusy : setDisplayBusy;
+    setB(true); setMsg(null); setError(null);
+    try {
+      await api.post(`/api/settings/restart/${target}`);
+      setMsg(
+        target === "backend"
+          ? "Backend restarting — this page will reconnect in a few seconds."
+          : "Pi display restarting."
+      );
+    } catch {
+      setError("Restart command failed.");
+    } finally {
+      setB(false);
+    }
+  };
+
+  return (
+    <Section icon={<ReplayIcon />} title="Restart Services">
+      <Typography variant="body2" color="text.secondary">
+        Restart the backend API or the Pi display process without rebooting the Pi.
+        The backend briefly drops and reconnects automatically.
+      </Typography>
+      {msg   && <Alert severity="info"  onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
+      <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+        <Button
+          variant="outlined"
+          startIcon={backendBusy ? <CircularProgress size={16} color="inherit" /> : <ReplayIcon />}
+          onClick={() => restart("backend")}
+          disabled={backendBusy || displayBusy}
+        >
+          Restart Backend
+        </Button>
+        <Button
+          variant="outlined"
+          startIcon={displayBusy ? <CircularProgress size={16} color="inherit" /> : <TvIcon />}
+          onClick={() => restart("display")}
+          disabled={backendBusy || displayBusy}
+        >
+          Restart Display
+        </Button>
+      </Box>
+    </Section>
+  );
+}
+
+function ResetSection() {
+  const [open,    setOpen]    = useState(false);
+  const [busy,    setBusy]    = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [error,   setError]   = useState(null);
+
+  const handleReset = async () => {
+    setBusy(true); setError(null);
+    try {
+      await api.post("/api/setup/reset");
+      setSuccess(true);
+    } catch {
+      setError("Reset failed — try again.");
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <Section icon={<RestartAltIcon />} title="Reset Install">
+      <Typography variant="body2" color="text.secondary">
+        Removes all signed-in calendar users and clears all RSS feeds.
+        OAuth and weather credentials are kept. Use this to hand the
+        dashboard off to a new family or start fresh.
+      </Typography>
+      {success && (
+        <Alert severity="success" onClose={() => setSuccess(false)}>
+          Reset complete — all users and RSS feeds have been removed.
+        </Alert>
+      )}
+      {error && (
+        <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>
+      )}
+      <Box>
+        <Button
+          variant="outlined"
+          color="error"
+          startIcon={<RestartAltIcon />}
+          onClick={() => setOpen(true)}
+        >
+          Reset Install
+        </Button>
+      </Box>
+
+      <Dialog open={open} onClose={() => !busy && setOpen(false)}>
+        <DialogTitle>Reset this install?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            This will remove <strong>all signed-in users</strong> and <strong>all RSS feeds</strong>.
+            OAuth and weather credentials will be kept.
+            This cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpen(false)} disabled={busy}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={handleReset}
+            disabled={busy}
+            startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <RestartAltIcon />}
+          >
+            {busy ? "Resetting…" : "Reset"}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Section>
   );
 }
@@ -270,7 +381,9 @@ export default function Admin() {
 
         <OAuthSettings />
         <WeatherSettings />
-        <RssSettings />
+        <DisplaySettings />
+        <RestartSection />
+        <ResetSection />
 
       </Box>
     </Box>

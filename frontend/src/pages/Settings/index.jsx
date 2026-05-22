@@ -5,6 +5,7 @@ import {
   Dialog, DialogTitle, DialogContent, DialogActions,
   Switch, ListItemText, ListItemIcon, IconButton, Tooltip,
   Checkbox, Radio, RadioGroup, FormControlLabel, FormControl, FormLabel,
+  ToggleButton, ToggleButtonGroup,
 } from "@mui/material";
 import SaveIcon             from "@mui/icons-material/Save";
 import AccountCircleIcon    from "@mui/icons-material/AccountCircle";
@@ -16,6 +17,10 @@ import RefreshIcon          from "@mui/icons-material/Refresh";
 import MoreVertIcon         from "@mui/icons-material/MoreVert";
 import GroupAddIcon         from "@mui/icons-material/GroupAdd";
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
+import AddIcon              from "@mui/icons-material/Add";
+import RssFeedIcon          from "@mui/icons-material/RssFeed";
+import CloudIcon            from "@mui/icons-material/Cloud";
+import ClearIcon            from "@mui/icons-material/Clear";
 import { googleLogout, useGoogleLogin } from "@react-oauth/google";
 import { useNavigate } from "react-router-dom";
 import api from "../../api/client";
@@ -137,8 +142,7 @@ function FamilySharingDialog({ cal, ownerEmail, open, onClose }) {
         ) : (
           <>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Checked members have this calendar in their Google Calendar. It won't appear on the
-              dashboard until they toggle it on in their own settings.
+              Checked members have this calendar in their Google Calendar.
             </Typography>
             {error && <Alert severity="warning" onClose={() => setError(null)} sx={{ mb: 1 }}>{error}</Alert>}
             {members.length === 0 ? (
@@ -176,12 +180,128 @@ function FamilySharingDialog({ cal, ownerEmail, open, onClose }) {
   );
 }
 
+// ── Assign Calendar dialog (click a calendar → assign primary/secondary users) ─
+
+function AssignCalendarDialog({ cal, open, onClose }) {
+  const [members,    setMembers]    = useState([]);
+  const [primary,    setPrimary]    = useState("");
+  const [secondary,  setSecondary]  = useState(new Set());
+  const [busy,       setBusy]       = useState(false);
+  const [msg,        setMsg]        = useState(null);
+  const [error,      setError]      = useState(null);
+
+  useEffect(() => {
+    if (!open || !cal) return;
+    setMsg(null); setError(null);
+    api.get("/api/user-prefs").then(res => {
+      const m = res.data || [];
+      setMembers(m);
+      if (m.length && !primary) setPrimary(m[0].email);
+    }).catch(() => {});
+  }, [open, cal]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleSecondary = (email) => {
+    if (email === primary) return;
+    setSecondary(prev => {
+      const next = new Set(prev);
+      if (next.has(email)) next.delete(email); else next.add(email);
+      return next;
+    });
+  };
+
+  const handlePrimaryChange = (email) => {
+    setPrimary(email);
+    setSecondary(prev => { const s = new Set(prev); s.delete(email); return s; });
+  };
+
+  const handleSave = async () => {
+    if (!primary || !cal) return;
+    setBusy(true); setMsg(null); setError(null);
+    try {
+      await api.post(`/api/calendar/subscription/${encodeURIComponent(primary)}`, { calendar_id: cal.id });
+      const prefsRes = await api.get(`/api/user-prefs/${encodeURIComponent(primary)}`);
+      const existing = prefsRes.data.selected_calendars || [];
+      if (!existing.some(c => c.id === cal.id)) {
+        existing.push({ id: cal.id, color: null });
+      }
+      await api.put(`/api/user-prefs/${encodeURIComponent(primary)}`, { selected_calendars: existing });
+      await Promise.allSettled(
+        [...secondary].filter(e => e !== primary).map(email =>
+          api.post(`/api/calendar/subscription/${encodeURIComponent(email)}`, { calendar_id: cal.id })
+        )
+      );
+      const name = members.find(m => m.email === primary)?.display_name || primary;
+      setMsg(`Assigned to ${name} — will appear on the dashboard.`);
+    } catch (e) {
+      setError(e?.response?.data?.detail || "Failed to assign calendar.");
+    } finally { setBusy(false); }
+  };
+
+  const secondaryOptions = members.filter(m => m.email !== primary);
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle>Assign "{cal?.summary}"</DialogTitle>
+      <DialogContent>
+        {msg   && <Alert severity="success" sx={{ mb: 2 }}>{msg}</Alert>}
+        {error && <Alert severity="error"   sx={{ mb: 2 }}>{error}</Alert>}
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          The primary user's copy will show on the dashboard. Secondary users get it
+          added to their Google Calendar without dashboard visibility.
+        </Typography>
+        <FormControl component="fieldset" fullWidth>
+          <FormLabel sx={{ fontSize: "0.875rem", fontWeight: 500, mb: 0.5 }}>
+            Primary — shown on dashboard
+          </FormLabel>
+          <RadioGroup value={primary} onChange={e => handlePrimaryChange(e.target.value)}>
+            {members.map(m => (
+              <FormControlLabel key={m.email} value={m.email}
+                control={<Radio size="small" />}
+                label={
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: m.display_color }} />
+                    <Typography variant="body2">{m.display_name || m.email}</Typography>
+                  </Box>
+                }
+              />
+            ))}
+          </RadioGroup>
+        </FormControl>
+        {secondaryOptions.length > 0 && (
+          <FormControl component="fieldset" sx={{ mt: 2 }} fullWidth>
+            <FormLabel sx={{ fontSize: "0.875rem", fontWeight: 500, mb: 0.5 }}>
+              Secondary — added to Google Calendar only
+            </FormLabel>
+            {secondaryOptions.map(m => (
+              <FormControlLabel key={m.email}
+                control={<Checkbox size="small" checked={secondary.has(m.email)} onChange={() => toggleSecondary(m.email)} />}
+                label={
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: m.display_color }} />
+                    <Typography variant="body2">{m.display_name || m.email}</Typography>
+                  </Box>
+                }
+              />
+            ))}
+          </FormControl>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="contained" onClick={handleSave} disabled={busy || !primary}>
+          {busy ? <CircularProgress size={18} color="inherit" /> : "Assign"}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 // ── Calendar picker ────────────────────────────────────────────────────────────
 
 const SCOPE_ERROR = "Request had insufficient authentication scopes";
 function isScopeError(msg) { return typeof msg === "string" && msg.includes("insufficient authentication scopes"); }
 
-function CalendarPicker({ email, selected, onChange, onReauth }) {
+function CalendarPicker({ email, selected, onChange, calColors, onColorChange, userColor, onReauth }) {
   const [calendars,    setCalendars]    = useState([]);
   const [loading,      setLoading]      = useState(false);
   const [error,        setError]        = useState(null);
@@ -190,6 +310,7 @@ function CalendarPicker({ email, selected, onChange, onReauth }) {
   const [dialog,       setDialog]       = useState(null);
   const [confirm,      setConfirm]      = useState(null);
   const [shareDialog,  setShareDialog]  = useState(null);
+  const [assignDialog, setAssignDialog] = useState(null);
   const [busy,         setBusy]         = useState(null);
   const [actionMsg,    setActionMsg]    = useState(null);
 
@@ -284,7 +405,7 @@ function CalendarPicker({ email, selected, onChange, onReauth }) {
     setDialog(null);
     setConfirm({
       title: "Copy calendar?",
-      body:  `"${cal.summary || cal.id}" will be added to ${member?.display_name || targetEmail}'s Google Calendar. Your copy is unaffected.`,
+      body:  `"${cal.summary || cal.id}" will be added to ${member?.display_name || targetEmail}'s Google Calendar.`,
       onConfirm: () => execCopy(cal, targetEmail),
     });
   };
@@ -294,7 +415,7 @@ function CalendarPicker({ email, selected, onChange, onReauth }) {
     setDialog(null);
     setConfirm({
       title: "Transfer calendar?",
-      body:  `"${cal.summary || cal.id}" will be added to ${member?.display_name || targetEmail}'s Google Calendar and removed from yours.`,
+      body:  `"${cal.summary || cal.id}" will move to ${member?.display_name || targetEmail} and be removed from yours.`,
       onConfirm: () => execTransfer(cal, targetEmail),
     });
   };
@@ -317,32 +438,76 @@ function CalendarPicker({ email, selected, onChange, onReauth }) {
     <Box>
       <Typography variant="body2" fontWeight={500} gutterBottom>Your calendars</Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-        Toggle to show on dashboard · <GroupAddIcon sx={{ fontSize: 13, verticalAlign: "middle" }} /> to share with family · ⋮ for more options
+        Click a calendar name to assign it to dashboard users · Toggle to show/hide · Color swatch overrides your event color
       </Typography>
 
       {actionMsg && <Alert severity="success" onClose={() => setActionMsg(null)} sx={{ mb: 1 }}>{actionMsg}</Alert>}
       {error === "__scope__" ? (
         <Alert severity="warning" onClose={() => setError(null)} sx={{ mb: 1 }}
           action={<Button size="small" color="inherit" onClick={onReauth}>Sign out &amp; re-authorize</Button>}>
-          Your sign-in needs to be renewed to manage calendars. Sign out and sign back in to grant the required permission.
+          Your sign-in needs to be renewed to manage calendars.
         </Alert>
       ) : error?.startsWith("__scope_other__") ? (
         <Alert severity="warning" onClose={() => setError(null)} sx={{ mb: 1 }}>
-          <strong>{error.slice("__scope_other__".length)}</strong> needs to sign out and sign back in before you can manage their calendars.
+          <strong>{error.slice("__scope_other__".length)}</strong> needs to sign out and sign back in.
         </Alert>
       ) : error ? (
         <Alert severity="error" onClose={() => setError(null)} sx={{ mb: 1 }}>{error}</Alert>
       ) : null}
 
-      <List dense disablePadding sx={{ maxHeight: 320, overflowY: "auto", border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
-        {calendars.map(cal => (
-          <ListItem
-            key={cal.id}
-            disableGutters
-            sx={{ px: 1.5, py: 0.5 }}
-            secondaryAction={
-              <Box sx={{ display: "flex", alignItems: "center" }}>
-                <Tooltip title="Family Sharing">
+      <List dense disablePadding sx={{ maxHeight: 360, overflowY: "auto", border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
+        {calendars.map(cal => {
+          const hasOverride = calColors.has(cal.id);
+          const swatchColor = calColors.get(cal.id) || userColor;
+          return (
+            <ListItem
+              key={cal.id}
+              disableGutters
+              sx={{ px: 1.5, py: 0.5 }}
+            >
+              {/* Clickable name area → opens Assign dialog */}
+              <Box
+                sx={{ flex: 1, display: "flex", alignItems: "center", gap: 1, cursor: "pointer",
+                      minWidth: 0, pr: 1, borderRadius: 1,
+                      "&:hover": { bgcolor: "action.hover" } }}
+                onClick={() => setAssignDialog(cal)}
+              >
+                <Box sx={{ width: 12, height: 12, borderRadius: "50%",
+                           bgcolor: cal.backgroundColor || "#1976d2", flexShrink: 0 }} />
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="body2" noWrap>{cal.summary}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {cal.primary ? "Primary calendar" : cal.accessRole}
+                  </Typography>
+                </Box>
+              </Box>
+              {/* Controls */}
+              <Box sx={{ display: "flex", alignItems: "center", flexShrink: 0, gap: 0.25 }}>
+                {/* Per-calendar color override */}
+                <Tooltip title={hasOverride ? "Custom dashboard color — click to change" : "Click to set a custom dashboard color for this calendar"}>
+                  <Box component="label" sx={{ display: "flex", alignItems: "center", cursor: "pointer", position: "relative" }}>
+                    <Box sx={{
+                      width: 18, height: 18, borderRadius: "3px",
+                      bgcolor: swatchColor,
+                      border: hasOverride ? "2px solid rgba(0,0,0,0.3)" : "2px dashed rgba(0,0,0,0.25)",
+                      flexShrink: 0,
+                    }} />
+                    <input
+                      type="color"
+                      value={swatchColor}
+                      onChange={e => onColorChange(cal.id, e.target.value)}
+                      style={{ position: "absolute", opacity: 0, width: "100%", height: "100%", top: 0, left: 0, cursor: "pointer", padding: 0, border: "none" }}
+                    />
+                  </Box>
+                </Tooltip>
+                {hasOverride && (
+                  <Tooltip title="Remove color override">
+                    <IconButton size="small" sx={{ p: "1px" }} onClick={() => onColorChange(cal.id, null)}>
+                      <ClearIcon sx={{ fontSize: 11 }} />
+                    </IconButton>
+                  </Tooltip>
+                )}
+                <Tooltip title="Family sharing">
                   <IconButton size="small" onClick={() => setShareDialog(cal)}>
                     <GroupAddIcon fontSize="small" />
                   </IconButton>
@@ -361,19 +526,9 @@ function CalendarPicker({ email, selected, onChange, onReauth }) {
                   {busy === cal.id ? <CircularProgress size={16} /> : <MoreVertIcon fontSize="small" />}
                 </IconButton>
               </Box>
-            }
-          >
-            <ListItemIcon sx={{ minWidth: 28 }}>
-              <Box sx={{ width: 12, height: 12, borderRadius: "50%", bgcolor: cal.backgroundColor || "#1976d2" }} />
-            </ListItemIcon>
-            <ListItemText
-              primary={cal.summary}
-              secondary={cal.primary ? "Primary calendar" : cal.accessRole}
-              primaryTypographyProps={{ variant: "body2", noWrap: true }}
-              secondaryTypographyProps={{ variant: "caption" }}
-            />
-          </ListItem>
-        ))}
+            </ListItem>
+          );
+        })}
       </List>
       <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
         {selected.size} of {calendars.length} shown on dashboard
@@ -381,6 +536,9 @@ function CalendarPicker({ email, selected, onChange, onReauth }) {
 
       {/* Per-calendar action menu */}
       <Menu anchorEl={menuState?.anchor} open={!!menuState} onClose={() => setMenuState(null)}>
+        <MenuItem onClick={() => { setAssignDialog(menuState.cal); setMenuState(null); }}>
+          Assign to dashboard users…
+        </MenuItem>
         <MenuItem disabled={!!menuState?.cal?.primary} onClick={() => handleUnsubscribe(menuState.cal)}>
           Unsubscribe from Google Calendar
         </MenuItem>
@@ -401,7 +559,7 @@ function CalendarPicker({ email, selected, onChange, onReauth }) {
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             {dialog?.type === "copy"
               ? `"${dialog?.cal?.summary}" will be added to the selected member's Google Calendar.`
-              : `"${dialog?.cal?.summary}" will be moved to the selected member and removed from yours.`}
+              : `"${dialog?.cal?.summary}" will be moved and removed from yours.`}
           </Typography>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
             {members.map(m => (
@@ -440,6 +598,13 @@ function CalendarPicker({ email, selected, onChange, onReauth }) {
         open={!!shareDialog}
         onClose={() => setShareDialog(null)}
       />
+
+      {/* Assign to dashboard users dialog */}
+      <AssignCalendarDialog
+        cal={assignDialog}
+        open={!!assignDialog}
+        onClose={() => setAssignDialog(null)}
+      />
     </Box>
   );
 }
@@ -447,20 +612,23 @@ function CalendarPicker({ email, selected, onChange, onReauth }) {
 // ── My Account inner ───────────────────────────────────────────────────────────
 
 function MyAccountInner({ hasSecret }) {
-  const [user,     setUser]     = useState(getStoredUser);
-  const [color,    setColor]    = useState("#1976d2");
-  const [hexDraft, setHexDraft] = useState("#1976d2");
-  const [selected, setSelected] = useState(new Set());
-  const [saving,   setSaving]   = useState(false);
-  const [signing,  setSigning]  = useState(false);
-  const [msg,      setMsg]      = useState(null);
-  const [error,    setError]    = useState(null);
+  const [user,      setUser]      = useState(getStoredUser);
+  const [color,     setColor]     = useState("#1976d2");
+  const [hexDraft,  setHexDraft]  = useState("#1976d2");
+  const [selected,  setSelected]  = useState(new Set());
+  const [calColors, setCalColors] = useState(new Map()); // calId → override color string
+  const [saving,    setSaving]    = useState(false);
+  const [signing,   setSigning]   = useState(false);
+  const [msg,       setMsg]       = useState(null);
+  const [error,     setError]     = useState(null);
 
   const loadPrefs = useCallback(async (email) => {
     try {
       const res = await api.get(`/api/user-prefs/${encodeURIComponent(email)}`);
-      if (res.data.display_color)      { setColor(res.data.display_color); setHexDraft(res.data.display_color); }
-      if (res.data.selected_calendars) setSelected(new Set(res.data.selected_calendars));
+      if (res.data.display_color) { setColor(res.data.display_color); setHexDraft(res.data.display_color); }
+      const items = res.data.selected_calendars || [];
+      setSelected(new Set(items.map(c => c.id)));
+      setCalColors(new Map(items.filter(c => c.color).map(c => [c.id, c.color])));
     } catch {}
   }, []);
 
@@ -487,9 +655,10 @@ function MyAccountInner({ hasSecret }) {
       const info = await infoRes.json();
       const u = { email: info.email, name: info.name, picture: info.picture };
       const expiryMs = Date.now() + (tokenResponse.expires_in || 3600) * 1000;
+      const calsList = [...selected].map(id => ({ id, color: calColors.get(id) || null }));
       await api.put(`/api/user-prefs/${encodeURIComponent(info.email)}`, {
         display_name: info.name, display_color: color,
-        selected_calendars: [...selected], access_token: tokenResponse.access_token, token_expiry: expiryMs,
+        selected_calendars: calsList, access_token: tokenResponse.access_token, token_expiry: expiryMs,
       });
       setUser(u); storeUser(u); loadPrefs(u.email);
     } catch (e) {
@@ -499,15 +668,16 @@ function MyAccountInner({ hasSecret }) {
 
   const handleLogout = () => {
     googleLogout(); clearStoredUser();
-    setUser(null); setColor("#1976d2"); setSelected(new Set()); setMsg(null);
+    setUser(null); setColor("#1976d2"); setSelected(new Set()); setCalColors(new Map()); setMsg(null);
   };
 
   const handleSave = async () => {
     if (!user) return;
     setSaving(true); setMsg(null); setError(null);
     try {
+      const calsList = [...selected].map(id => ({ id, color: calColors.get(id) || null }));
       await api.put(`/api/user-prefs/${encodeURIComponent(user.email)}`, {
-        display_name: user.name, display_color: color, selected_calendars: [...selected],
+        display_name: user.name, display_color: color, selected_calendars: calsList,
       });
       setMsg("Your settings have been saved!");
     } catch { setError("Could not save your settings. Please try again."); }
@@ -578,7 +748,19 @@ function MyAccountInner({ hasSecret }) {
 
       <Divider />
 
-      <CalendarPicker email={user.email} selected={selected} onChange={setSelected} onReauth={handleLogout} />
+      <CalendarPicker
+        email={user.email}
+        selected={selected}
+        onChange={setSelected}
+        calColors={calColors}
+        onColorChange={(id, color) => setCalColors(prev => {
+          const next = new Map(prev);
+          if (color) next.set(id, color); else next.delete(id);
+          return next;
+        })}
+        userColor={color}
+        onReauth={handleLogout}
+      />
 
       {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
@@ -622,7 +804,7 @@ function MyAccount() {
   );
 }
 
-// ── Add Calendar ───────────────────────────────────────────────────────────────
+// ── Add Calendar by URL ────────────────────────────────────────────────────────
 
 function AddCalendar() {
   const [members,    setMembers]    = useState([]);
@@ -639,7 +821,7 @@ function AddCalendar() {
       setMembers(users);
       if (users.length > 0 && !primary) setPrimary(users[0].email);
     }).catch(() => {});
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const calId    = extractCalendarId(url);
   const calValid = url.trim().length > 0 && calId.length > 0 && !calId.startsWith("http") && (calId.includes("@") || calId.includes("#"));
@@ -658,9 +840,11 @@ function AddCalendar() {
     try {
       await api.post(`/api/calendar/subscription/${encodeURIComponent(primary)}`, { calendar_id: calId });
       const prefsRes = await api.get(`/api/user-prefs/${encodeURIComponent(primary)}`);
-      const existing = new Set(prefsRes.data.selected_calendars || []);
-      existing.add(calId);
-      await api.put(`/api/user-prefs/${encodeURIComponent(primary)}`, { selected_calendars: [...existing] });
+      const existing = prefsRes.data.selected_calendars || [];
+      if (!existing.some(c => c.id === calId)) {
+        existing.push({ id: calId, color: null });
+      }
+      await api.put(`/api/user-prefs/${encodeURIComponent(primary)}`, { selected_calendars: existing });
       await Promise.allSettled(
         [...secondary].map(email =>
           api.post(`/api/calendar/subscription/${encodeURIComponent(email)}`, { calendar_id: calId })
@@ -674,17 +858,22 @@ function AddCalendar() {
     } finally { setSubmitting(false); }
   };
 
-  if (!members.length) return null;
-
   return (
-    <Section icon={<AddCircleOutlineIcon />} title="Add Calendar">
+    <Section icon={<AddCircleOutlineIcon />} title="Add Calendar by URL">
       <Typography variant="body2" color="text.secondary">
-        Add any Google Calendar by URL or ID. The primary user's copy will appear on the dashboard;
-        secondary users get it added to their Google Calendar without dashboard visibility.
+        Add any Google Calendar by URL or ID and assign it to dashboard users.
+        The primary user's events appear on the display; secondary users get it
+        added to their Google Calendar without dashboard visibility.
       </Typography>
 
       {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+
+      {members.length === 0 && (
+        <Alert severity="info">
+          Sign in to a Google account first — you need at least one dashboard user to assign this calendar to.
+        </Alert>
+      )}
 
       <TextField
         label="Calendar URL or ID"
@@ -698,49 +887,54 @@ function AddCalendar() {
                               "Couldn't parse a calendar ID — try pasting the full sharing URL."
         }
         error={url.trim().length > 0 && !calValid}
+        disabled={members.length === 0}
       />
 
-      <FormControl component="fieldset">
-        <FormLabel component="legend" sx={{ fontSize: "0.875rem", fontWeight: 500, mb: 0.5 }}>
-          Primary user — calendar shown on dashboard
-        </FormLabel>
-        <RadioGroup value={primary} onChange={e => setPrimary(e.target.value)}>
-          {members.map(m => (
-            <FormControlLabel key={m.email} value={m.email}
-              control={<Radio size="small" />}
-              label={
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: m.display_color }} />
-                  <Typography variant="body2">{m.display_name || m.email}</Typography>
-                </Box>
-              }
-            />
-          ))}
-        </RadioGroup>
-      </FormControl>
+      {members.length > 0 && (
+        <>
+          <FormControl component="fieldset">
+            <FormLabel component="legend" sx={{ fontSize: "0.875rem", fontWeight: 500, mb: 0.5 }}>
+              Primary user — calendar shown on dashboard
+            </FormLabel>
+            <RadioGroup value={primary} onChange={e => setPrimary(e.target.value)}>
+              {members.map(m => (
+                <FormControlLabel key={m.email} value={m.email}
+                  control={<Radio size="small" />}
+                  label={
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                      <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: m.display_color }} />
+                      <Typography variant="body2">{m.display_name || m.email}</Typography>
+                    </Box>
+                  }
+                />
+              ))}
+            </RadioGroup>
+          </FormControl>
 
-      {members.filter(m => m.email !== primary).length > 0 && (
-        <FormControl component="fieldset">
-          <FormLabel component="legend" sx={{ fontSize: "0.875rem", fontWeight: 500, mb: 0.5 }}>
-            Secondary users — added to Google Calendar, not shown on dashboard
-          </FormLabel>
-          {members.filter(m => m.email !== primary).map(m => (
-            <FormControlLabel key={m.email}
-              control={<Checkbox size="small" checked={secondary.has(m.email)} onChange={() => toggleSecondary(m.email)} />}
-              label={
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                  <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: m.display_color }} />
-                  <Typography variant="body2">{m.display_name || m.email}</Typography>
-                </Box>
-              }
-            />
-          ))}
-        </FormControl>
+          {members.filter(m => m.email !== primary).length > 0 && (
+            <FormControl component="fieldset">
+              <FormLabel component="legend" sx={{ fontSize: "0.875rem", fontWeight: 500, mb: 0.5 }}>
+                Secondary users — added to Google Calendar, not shown on dashboard
+              </FormLabel>
+              {members.filter(m => m.email !== primary).map(m => (
+                <FormControlLabel key={m.email}
+                  control={<Checkbox size="small" checked={secondary.has(m.email)} onChange={() => toggleSecondary(m.email)} />}
+                  label={
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                      <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: m.display_color }} />
+                      <Typography variant="body2">{m.display_name || m.email}</Typography>
+                    </Box>
+                  }
+                />
+              ))}
+            </FormControl>
+          )}
+        </>
       )}
 
       <Box>
         <Button variant="contained" onClick={handleSubmit}
-          disabled={!calValid || !primary || submitting}
+          disabled={!calValid || !primary || submitting || members.length === 0}
           startIcon={submitting ? <CircularProgress size={18} color="inherit" /> : <AddCircleOutlineIcon />}>
           Add Calendar
         </Button>
@@ -812,6 +1006,142 @@ function FamilyMembers() {
   );
 }
 
+// ── Weather Location ───────────────────────────────────────────────────────────
+
+function WeatherLocation() {
+  const [location, setLocation] = useState("");
+  const [units,    setUnits]    = useState("imperial");
+  const [saving,   setSaving]   = useState(false);
+  const [msg,      setMsg]      = useState(null);
+  const [error,    setError]    = useState(null);
+
+  useEffect(() => {
+    api.get("/api/settings/weather").then(res => {
+      setLocation(res.data.location || "");
+      setUnits(res.data.units || "imperial");
+    }).catch(() => {});
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true); setMsg(null); setError(null);
+    try {
+      await api.put("/api/settings/weather", { location, units });
+      setMsg("Weather location saved.");
+    } catch {
+      setError("Failed to save.");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Section icon={<CloudIcon />} title="Weather Location">
+      <Typography variant="body2" color="text.secondary">
+        Enter your city and state (e.g. <strong>Moraga, CA</strong>) or ZIP code (e.g. <strong>94556</strong>).
+        The display will show the location label you enter here.
+      </Typography>
+      <TextField
+        label="City, State or ZIP code" size="small" fullWidth
+        value={location} onChange={e => setLocation(e.target.value)}
+        placeholder="e.g. Moraga, CA  or  94556"
+      />
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+        <Typography variant="body2" color="text.secondary">Units:</Typography>
+        <ToggleButtonGroup size="small" exclusive value={units}
+          onChange={(_, v) => { if (v) setUnits(v); }}>
+          <ToggleButton value="imperial">Imperial (°F)</ToggleButton>
+          <ToggleButton value="metric">Metric (°C)</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+      <Box>
+        <Button variant="contained"
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+          onClick={handleSave} disabled={saving || !location.trim()}>
+          Save Location
+        </Button>
+      </Box>
+    </Section>
+  );
+}
+
+// ── RSS Feeds ──────────────────────────────────────────────────────────────────
+
+function RssSettings() {
+  const [feeds,  setFeeds]  = useState([{ url: "", label: "" }]);
+  const [saving, setSaving] = useState(false);
+  const [msg,    setMsg]    = useState(null);
+  const [error,  setError]  = useState(null);
+
+  useEffect(() => {
+    api.get("/api/settings/rss").then(res => {
+      const loaded = res.data.feeds || [];
+      setFeeds(loaded.length > 0 ? loaded : [{ url: "", label: "" }]);
+    }).catch(() => {});
+  }, []);
+
+  const updateFeed = (i, field, value) =>
+    setFeeds(prev => prev.map((f, idx) => idx === i ? { ...f, [field]: value } : f));
+  const addFeed    = () => setFeeds(prev => [...prev, { url: "", label: "" }]);
+  const removeFeed = (i) =>
+    setFeeds(prev => prev.length === 1 ? [{ url: "", label: "" }] : prev.filter((_, idx) => idx !== i));
+
+  const handleSave = async () => {
+    setSaving(true); setMsg(null); setError(null);
+    try {
+      const res = await api.put("/api/settings/rss", { feeds });
+      setMsg(`Saved ${res.data.count} feed${res.data.count !== 1 ? "s" : ""}.`);
+    } catch {
+      setError("Failed to save.");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Section icon={<RssFeedIcon />} title="RSS News Feeds">
+      <Typography variant="body2" color="text.secondary">
+        Headlines rotate in the news ticker at the top of the dashboard.
+        The label is optional and appears as a source tag.
+      </Typography>
+      <List disablePadding sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+        {feeds.map((feed, i) => (
+          <ListItem key={i} disableGutters disablePadding>
+            <Box sx={{ display: "flex", gap: 1, width: "100%", alignItems: "flex-start" }}>
+              <TextField
+                label="Feed URL" size="small" sx={{ flex: 3 }}
+                value={feed.url} onChange={e => updateFeed(i, "url", e.target.value)}
+                placeholder="https://feeds.example.com/rss"
+              />
+              <TextField
+                label="Label" size="small" sx={{ flex: 1 }}
+                value={feed.label} onChange={e => updateFeed(i, "label", e.target.value)}
+                placeholder="e.g. AP"
+              />
+              <Tooltip title="Remove">
+                <IconButton size="small" color="error" onClick={() => removeFeed(i)} sx={{ mt: 0.5 }}>
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          </ListItem>
+        ))}
+      </List>
+      <Box>
+        <Button size="small" startIcon={<AddIcon />} onClick={addFeed} variant="outlined">
+          Add Feed
+        </Button>
+      </Box>
+      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+      <Box>
+        <Button variant="contained"
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+          onClick={handleSave} disabled={saving}>
+          Save RSS Feeds
+        </Button>
+      </Box>
+    </Section>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function Settings() {
@@ -831,6 +1161,8 @@ export default function Settings() {
         <MyAccount />
         <AddCalendar />
         <FamilyMembers />
+        <WeatherLocation />
+        <RssSettings />
 
       </Box>
     </Box>

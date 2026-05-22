@@ -15,6 +15,13 @@ def _read_config() -> dict:
     return json.loads(CONFIG_PATH.read_text())
 
 
+def _owm_location(location: str) -> str:
+    """Append ,US to bare 5-digit zip codes so OWM resolves them as US locations."""
+    if location and location.isdigit() and len(location) == 5:
+        return f"{location},US"
+    return location
+
+
 @router.get("/current")
 async def get_current_weather():
     cfg = _read_config()
@@ -26,26 +33,34 @@ async def get_current_weather():
     async with httpx.AsyncClient(timeout=10) as client:
         res = await client.get(
             "https://api.openweathermap.org/data/2.5/weather",
-            params={"q": location, "appid": api_key, "units": units},
+            params={"q": _owm_location(location), "appid": api_key, "units": units},
         )
     if res.status_code != 200:
         raise HTTPException(status_code=res.status_code, detail="OWM API error")
     data = res.json()
     unit_symbol = "°F" if units == "imperial" else "°C"
+    # Build a human-readable location label: if the user stored a bare ZIP, use OWM's city name;
+    # otherwise show the configured string as-is (e.g. "Moraga, CA").
+    raw_loc = cfg.get("owm_location", "")
+    if raw_loc.replace(",US", "").strip().isdigit():
+        location_label = data.get("name", raw_loc)
+    else:
+        location_label = raw_loc
     return {
-        "temp":        round(data["main"]["temp"]),
-        "feels_like":  round(data["main"]["feels_like"]),
-        "humidity":    data["main"]["humidity"],
-        "description": data["weather"][0]["description"].title(),
-        "icon":        data["weather"][0]["icon"],
-        "city":        data["name"],
-        "unit_symbol": unit_symbol,
-        "wind_speed":  round(data["wind"]["speed"]),
-        "wind_unit":   "mph" if units == "imperial" else "m/s",
-        "sunrise":     data["sys"]["sunrise"],
-        "sunset":      data["sys"]["sunset"],
-        "temp_min":    round(data["main"]["temp_min"]),
-        "temp_max":    round(data["main"]["temp_max"]),
+        "temp":           round(data["main"]["temp"]),
+        "feels_like":     round(data["main"]["feels_like"]),
+        "humidity":       data["main"]["humidity"],
+        "description":    data["weather"][0]["description"].title(),
+        "icon":           data["weather"][0]["icon"],
+        "city":           data["name"],
+        "location_label": location_label,
+        "unit_symbol":    unit_symbol,
+        "wind_speed":     round(data["wind"]["speed"]),
+        "wind_unit":      "mph" if units == "imperial" else "m/s",
+        "sunrise":        data["sys"]["sunrise"],
+        "sunset":         data["sys"]["sunset"],
+        "temp_min":       round(data["main"]["temp_min"]),
+        "temp_max":       round(data["main"]["temp_max"]),
     }
 
 
@@ -61,7 +76,7 @@ async def get_forecast():
     async with httpx.AsyncClient(timeout=10) as client:
         res = await client.get(
             "https://api.openweathermap.org/data/2.5/forecast",
-            params={"q": location, "appid": api_key, "units": units, "cnt": 40},
+            params={"q": _owm_location(location), "appid": api_key, "units": units, "cnt": 40},
         )
     if res.status_code != 200:
         raise HTTPException(status_code=res.status_code, detail="OWM API error")

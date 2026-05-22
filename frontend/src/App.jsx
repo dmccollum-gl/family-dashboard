@@ -4,6 +4,7 @@ import { ThemeProvider, createTheme, CssBaseline } from "@mui/material";
 import Dashboard from "./pages/Dashboard";
 import Settings  from "./pages/Settings";
 import Admin     from "./pages/Admin";
+import Setup     from "./pages/Setup";
 
 export const ColorModeContext = createContext({ toggle: () => {}, mode: "light", effectiveMode: "light" });
 
@@ -22,6 +23,16 @@ function computeAutoMode(sunTimes) {
 }
 
 export default function App() {
+  const [needsSetup, setNeedsSetup] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/setup/status")
+      .then(r => r.json())
+      // Show setup if not configured OR if the hotspot is active (recovery mode)
+      .then(d => setNeedsSetup(!d.configured || d.setup_mode === true))
+      .catch(() => setNeedsSetup(false)); // dev environment — skip setup
+  }, []);
+
   const [mode, setMode] = useState(
     () => localStorage.getItem("dashboard_theme") || "light"
   );
@@ -80,10 +91,17 @@ export default function App() {
       <ThemeProvider theme={theme}>
         <CssBaseline />
         <Routes>
-          <Route path="/"         element={<Dashboard />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/admin"    element={<Admin />} />
-          <Route path="*"         element={<Navigate to="/" replace />} />
+          <Route path="/setup" element={<Setup />} />
+          {needsSetup ? (
+            <Route path="*" element={<Navigate to="/setup" replace />} />
+          ) : (
+            <>
+              <Route path="/"         element={<Dashboard />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/admin"    element={<Admin />} />
+              <Route path="*"         element={<Navigate to="/" replace />} />
+            </>
+          )}
         </Routes>
       </ThemeProvider>
     </ColorModeContext.Provider>

@@ -1,76 +1,40 @@
-## Configuring WiFi on an already-flashed SD card
+## WiFi Configuration
 
-Pi OS Bookworm uses **cloud-init** for network configuration, not the old
-`wpa_supplicant.conf` method. The file you need to edit is `network-config`
-in the FAT32 boot partition.
+WiFi credentials are **baked into the image at build time** by `build-image.sh`.
+You will be prompted for your SSID and password when you run the build script.
+No manual file editing or Imager customisation step is needed.
 
-### Steps
+### Why not Raspberry Pi Imager's "Edit Settings"?
 
-1. Insert the SD card into your Mac.
-2. The boot partition mounts automatically -- it appears in Finder as **bootfs**.
-3. Open `bootfs/network-config` in any text editor (TextEdit, VS Code, etc.).
-4. Replace the contents with:
+Imager v2.x only shows the OS customisation popup for official Pi OS catalog
+images, not for custom `.img` files. It silently skips the step for custom images.
 
-```yaml
-version: 2
-ethernets:
-  eth0:
-    dhcp4: true
-    optional: true
-wifis:
-  wlan0:
-    dhcp4: true
-    optional: true
-    access-points:
-      "YOUR_WIFI_NAME":
-        password: "YOUR_WIFI_PASSWORD"
-```
+### Changing WiFi after flashing
 
-5. Save the file, eject the SD card, insert into Pi and power on.
-
-### Multiple networks
-
-```yaml
-version: 2
-ethernets:
-  eth0:
-    dhcp4: true
-    optional: true
-wifis:
-  wlan0:
-    dhcp4: true
-    optional: true
-    access-points:
-      "HomeNetwork":
-        password: "homepassword"
-      "GuestNetwork":
-        password: "guestpassword"
-```
-
-### Ethernet only
-
-If the Pi is connected via ethernet you do not need to edit anything --
-`eth0` is already configured for DHCP.
-
-### After first boot
-
-Once the Pi has booted and run firstrun.sh, WiFi is managed by NetworkManager.
-You can change networks at any time with:
+SSH into the Pi and use `nmcli`:
 
 ```bash
+# Connect to a new network
 sudo nmcli device wifi connect "SSID" password "PASSWORD"
+
+# List saved connections
+nmcli connection show
+
+# Delete the baked-in connection
+sudo nmcli connection delete dashboard-wifi
 ```
 
-Or add/remove connections:
+Or use `raspi-config`:
 
 ```bash
-sudo nmcli connection show
-sudo nmcli connection delete "old-network"
+sudo raspi-config
+# Navigate to: System Options -> Wireless LAN
 ```
 
-### Why not wpa_supplicant.conf?
+### How it works under the hood
 
-The `wpa_supplicant.conf` trick (placing the file in the boot partition) worked
-on Pi OS Bullseye and earlier. Pi OS Bookworm (Debian 12) switched the network
-stack to NetworkManager and cloud-init. Placing `wpa_supplicant.conf` in the
-boot partition no longer has any effect on Bookworm.
+`build-image.sh` passes your WiFi credentials into the Docker chroot as
+environment variables. `chroot-setup.sh` writes them as a NetworkManager
+keyfile at `/etc/NetworkManager/system-connections/dashboard-wifi.nmconnection`
+with permissions `600`. This is the native Bookworm method — wpa_supplicant
+and cloud-init are not used by Pi OS Bookworm.

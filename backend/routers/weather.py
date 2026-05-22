@@ -94,11 +94,11 @@ async def get_forecast():
     for day_key in sorted(days.keys())[:5]:
         entries = days[day_key]
         temps   = [e["main"]["temp"] for e in entries]
-        # Prefer midday entry for the representative icon
-        rep = next(
-            (e for e in entries if "12:00:00" in e["dt_txt"] or "15:00:00" in e["dt_txt"]),
-            entries[len(entries) // 2],
-        )
+        # Pick entry closest to 2 PM local time — searching UTC strings gives
+        # early-morning local entries with night icon codes (01n = moon, etc.).
+        rep = min(entries, key=lambda e: abs(
+            datetime.fromtimestamp(e["dt"] + tz_offset, tz=timezone.utc).hour - 14
+        ))
         raw_icon = rep["weather"][0]["icon"]
         # Always use daytime variant — midday-UTC selection falls in early AM Pacific,
         # yielding night codes (01n = moon) that look like circles on the display.

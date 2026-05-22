@@ -35,6 +35,7 @@ Fetch schedule
 """
 
 import argparse, json, os, socket, sys, threading, time
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -568,6 +569,28 @@ def _parse_events(raw: list, start: date, end: date) -> tuple[list, list]:
             "_total": 1,
         }
         (all_day if is_allday else timed).append(rec)
+
+    # Merge duplicate events shared across calendars into one with multiple colors.
+    def _merge(evs: list, key_fn) -> list:
+        groups: dict = defaultdict(list)
+        for ev in evs:
+            groups[key_fn(ev)].append(ev)
+        out = []
+        for grp in groups.values():
+            if len(grp) == 1:
+                out.append(grp[0])
+            else:
+                base = dict(grp[0])
+                base["color_list"] = [e["color"] for e in grp]
+                out.append(base)
+        return out
+
+    timed   = _merge(timed,   lambda e: (e["title"].strip().lower(),
+                                          e["start"].replace(second=0, microsecond=0),
+                                          e["end"].replace(second=0, microsecond=0)))
+    all_day = _merge(all_day, lambda e: (e["title"].strip().lower(),
+                                          e["start"].date(), e["end"].date()))
+
     _layout_timed(timed)
     return all_day, timed
 
@@ -860,21 +883,33 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         cx = x + LABEL_W + d * col_w
         pygame.draw.line(surf, C["border"], (cx, y + hdr_h), (cx, y + h))
 
-    # All-day event bars — spanning multiple columns when the event crosses day boundaries.
+    # All-day event bars — spanning multiple columns; split vertically for shared events.
     fnt_ad = _font(14)
     for ev, col_s, col_e, row in ad_placed:
         ex  = x + LABEL_W + col_s * col_w + 2
         ew  = (col_e - col_s) * col_w - 4
         ey  = y + hdr_h + 2 + row * AD_ROW_H
         eh  = AD_ROW_H - 2
-        clr = _hex_rgb(ev["color"])
-        _rrect(surf, clr, pygame.Rect(ex, ey, ew, eh), 3, 240)
-        # Glass sheen on upper portion
-        sh_h = max(2, eh // 2)
-        sh   = pygame.Surface((ew - 2, sh_h), pygame.SRCALPHA)
-        sh.fill((255, 255, 255, 30))
-        surf.blit(sh, (ex + 1, ey + 1))
-        surf.blit(fnt_ad.render(_trunc(ev["title"], fnt_ad, ew - 4), True, _event_text_color(clr)),
+        color_list = ev.get("color_list")
+        if color_list and len(color_list) > 1:
+            clrs = [_hex_rgb(c) for c in color_list]
+            n    = len(clrs)
+            sw   = max(1, ew // n)
+            for ci, c in enumerate(clrs):
+                sx   = ex + ci * sw
+                sw_i = sw if ci < n - 1 else (ex + ew - sx)
+                _rrect(surf, c, pygame.Rect(sx, ey, sw_i, eh), 3, 240)
+            avg     = tuple(sum(c[i] for c in clrs) // n for i in range(3))
+            txt_clr = _event_text_color(avg)
+        else:
+            clr = _hex_rgb(ev["color"])
+            _rrect(surf, clr, pygame.Rect(ex, ey, ew, eh), 3, 240)
+            sh_h = max(2, eh // 2)
+            sh   = pygame.Surface((ew - 2, sh_h), pygame.SRCALPHA)
+            sh.fill((255, 255, 255, 30))
+            surf.blit(sh, (ex + 1, ey + 1))
+            txt_clr = _event_text_color(clr)
+        surf.blit(fnt_ad.render(_trunc(ev["title"], fnt_ad, ew - 4), True, txt_clr),
                   (ex + 2, ey + (eh - fnt_ad.get_height()) // 2))
 
     def _clamp(v, lo, hi):
@@ -897,20 +932,31 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         bx   = x + LABEL_W + d * col_w
         ev_x = bx + int(col_w * col / tot) + 1
         ev_w = int(col_w / tot) - 2
-        clr  = _hex_rgb(ev["color"])
-        # Full event body
-        _rrect(surf, clr, pygame.Rect(int(ev_x), int(ev_y), ev_w, int(ev_h)), 4, 235)
-        # Left accent stripe — lighter shade of the event color
-        stripe_clr = tuple(min(255, c + 65) for c in clr)
-        _rrect(surf, stripe_clr, pygame.Rect(int(ev_x), int(ev_y), 4, int(ev_h)), 4)
-        # Glass sheen on upper portion
+        color_list = ev.get("color_list")
+        if color_list and len(color_list) > 1:
+            # Shared event: split rect into vertical color strips
+            clrs = [_hex_rgb(c) for c in color_list]
+            n    = len(clrs)
+            sw   = max(1, ev_w // n)
+            for ci, c in enumerate(clrs):
+                sx   = int(ev_x) + ci * sw
+                sw_i = sw if ci < n - 1 else (int(ev_x) + ev_w - sx)
+                _rrect(surf, c, pygame.Rect(sx, int(ev_y), sw_i, int(ev_h)), 4, 235)
+            avg      = tuple(sum(c[i] for c in clrs) // n for i in range(3))
+            ev_txt_c = _event_text_color(avg)
+        else:
+            clr = _hex_rgb(ev["color"])
+            _rrect(surf, clr, pygame.Rect(int(ev_x), int(ev_y), ev_w, int(ev_h)), 4, 235)
+            stripe_clr = tuple(min(255, c + 65) for c in clr)
+            _rrect(surf, stripe_clr, pygame.Rect(int(ev_x), int(ev_y), 4, int(ev_h)), 4)
+            ev_txt_c = _event_text_color(clr)
+        # Glass sheen over full block regardless of single/multi color
         if int(ev_h) >= 8:
             sh_h  = max(3, int(ev_h * 0.38))
             sheen = pygame.Surface((ev_w - 2, sh_h), pygame.SRCALPHA)
             sheen.fill((255, 255, 255, 22))
             surf.blit(sheen, (int(ev_x) + 1, int(ev_y) + 1))
-        fnt      = _font(14 if ev_h < 40 else 16)
-        ev_txt_c = _event_text_color(clr)
+        fnt = _font(14 if ev_h < 40 else 16)
         surf.blit(fnt.render(_trunc(ev["title"], fnt, ev_w - 6), True, ev_txt_c),
                   (ev_x + 6, ev_y + 2))
         if ev_h >= 40:

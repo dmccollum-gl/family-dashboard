@@ -49,7 +49,7 @@ def _write_config(patch: dict) -> None:
 
 
 async def _geocode(address: str) -> tuple[float, float]:
-    """Return (lat, lon) via Nominatim; result cached in config by address string."""
+    """Return (lat, lon) via Open-Meteo geocoding; result cached in config."""
     cfg = _read_config()
     if (cfg.get("_geo_for") == address
             and cfg.get("_geo_lat") is not None
@@ -58,15 +58,14 @@ async def _geocode(address: str) -> tuple[float, float]:
 
     async with httpx.AsyncClient(timeout=10, verify=False) as client:
         res = await client.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={"q": address, "format": "json", "limit": "1"},
-            headers={"User-Agent": "FamilyDashboard/1.0 (home-kiosk)"},
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": address, "count": "1", "language": "en", "format": "json"},
         )
-    if res.status_code != 200 or not res.json():
+    results = res.json().get("results") if res.status_code == 200 else None
+    if not results:
         raise HTTPException(status_code=404, detail=f"Could not geocode: {address!r}")
 
-    hit = res.json()[0]
-    lat, lon = float(hit["lat"]), float(hit["lon"])
+    lat, lon = float(results[0]["latitude"]), float(results[0]["longitude"])
     _write_config({"_geo_lat": lat, "_geo_lon": lon, "_geo_for": address})
     return lat, lon
 

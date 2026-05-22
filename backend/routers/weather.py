@@ -1,12 +1,39 @@
 from fastapi import APIRouter, HTTPException
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from collections import defaultdict
-import json, httpx
+import json, httpx, time
 
 router = APIRouter()
 
 CONFIG_PATH = Path(__file__).parent.parent / "dashboard_config.json"
+
+# 5-minute in-memory cache — one combined Open-Meteo call serves both endpoints.
+_cache: dict = {"data": None, "ts": 0.0, "ttl": 300.0}
+
+# WMO weather code → OWM-style icon code (always daytime variant).
+_WMO_ICON: dict[int, str] = {
+    0: "01d", 1: "02d", 2: "03d", 3: "04d",
+    45: "50d", 48: "50d",
+    51: "09d", 53: "09d", 55: "09d", 56: "09d", 57: "09d",
+    61: "10d", 63: "10d", 65: "10d", 66: "10d", 67: "10d",
+    71: "13d", 73: "13d", 75: "13d", 77: "13d",
+    80: "09d", 81: "09d", 82: "09d",
+    85: "13d", 86: "13d",
+    95: "11d", 96: "11d", 99: "11d",
+}
+
+_WMO_DESC: dict[int, str] = {
+    0: "Clear Sky",       1: "Mainly Clear",         2: "Partly Cloudy",    3: "Overcast",
+    45: "Fog",            48: "Icy Fog",
+    51: "Light Drizzle",  53: "Drizzle",              55: "Heavy Drizzle",
+    56: "Freezing Drizzle", 57: "Heavy Freezing Drizzle",
+    61: "Light Rain",     63: "Rain",                 65: "Heavy Rain",
+    66: "Freezing Rain",  67: "Heavy Freezing Rain",
+    71: "Light Snow",     73: "Snow",                 75: "Heavy Snow",      77: "Snow Grains",
+    80: "Showers",        81: "Heavy Showers",        82: "Violent Showers",
+    85: "Snow Showers",   86: "Heavy Snow Showers",
+    95: "Thunderstorm",   96: "Thunderstorm w/ Hail", 99: "Severe Thunderstorm",
+}
 
 
 def _read_config() -> dict:
@@ -15,100 +42,147 @@ def _read_config() -> dict:
     return json.loads(CONFIG_PATH.read_text())
 
 
-def _owm_location(location: str) -> str:
-    """Append ,US to bare 5-digit zip codes so OWM resolves them as US locations."""
-    if location and location.isdigit() and len(location) == 5:
-        return f"{location},US"
-    return location
+def _write_config(patch: dict) -> None:
+    cfg = _read_config()
+    cfg.update(patch)
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+
+
+async def _geocode(address: str) -> tuple[float, float]:
+    """Return (lat, lon) via Nominatim; result cached in config by address string."""
+    cfg = _read_config()
+    if (cfg.get("_geo_for") == address
+            and cfg.get("_geo_lat") is not None
+            and cfg.get("_geo_lon") is not None):
+        return float(cfg["_geo_lat"]), float(cfg["_geo_lon"])
+
+    async with httpx.AsyncClient(timeout=10, verify=False) as client:
+        res = await client.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": address, "format": "json", "limit": "1"},
+            headers={"User-Agent": "FamilyDashboard/1.0 (home-kiosk)"},
+        )
+    if res.status_code != 200 or not res.json():
+        raise HTTPException(status_code=404, detail=f"Could not geocode: {address!r}")
+
+    hit = res.json()[0]
+    lat, lon = float(hit["lat"]), float(hit["lon"])
+    _write_config({"_geo_lat": lat, "_geo_lon": lon, "_geo_for": address})
+    return lat, lon
+
+
+def _iso_to_ts(s: str, utc_offset_sec: int) -> int:
+    """Convert an Open-Meteo naive ISO datetime string to a UTC Unix timestamp."""
+    try:
+        tz  = timezone(timedelta(seconds=utc_offset_sec))
+        return int(datetime.fromisoformat(s).replace(tzinfo=tz).timestamp())
+    except Exception:
+        return 0
+
+
+async def _fetch_om(cfg: dict) -> dict:
+    """Single Open-Meteo call for current conditions + 6-day daily forecast."""
+    now = time.monotonic()
+    if _cache["data"] and now - _cache["ts"] < _cache["ttl"]:
+        return _cache["data"]
+
+    address = cfg.get("owm_location", "").strip()
+    if not address:
+        raise HTTPException(status_code=404, detail="Weather location not configured")
+
+    lat, lon = await _geocode(address)
+    units    = cfg.get("owm_units", "imperial")
+    temp_u   = "fahrenheit" if units == "imperial" else "celsius"
+    wind_u   = "mph"        if units == "imperial" else "kmh"
+
+    async with httpx.AsyncClient(timeout=15, verify=False) as client:
+        res = await client.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude":         lat,
+                "longitude":        lon,
+                "current":          ",".join([
+                    "temperature_2m", "relative_humidity_2m",
+                    "apparent_temperature", "weather_code", "wind_speed_10m",
+                ]),
+                "daily":            ",".join([
+                    "temperature_2m_max", "temperature_2m_min",
+                    "weather_code", "sunrise", "sunset",
+                ]),
+                "temperature_unit": temp_u,
+                "wind_speed_unit":  wind_u,
+                "timezone":         "auto",
+                "forecast_days":    "6",
+            },
+        )
+    if res.status_code != 200:
+        raise HTTPException(status_code=502, detail="Open-Meteo API error")
+
+    data = res.json()
+    _cache["data"] = data
+    _cache["ts"]   = now
+    return data
 
 
 @router.get("/current")
 async def get_current_weather():
-    cfg = _read_config()
-    api_key  = cfg.get("owm_api_key")
-    location = cfg.get("owm_location")
+    cfg  = _read_config()
+    data = await _fetch_om(cfg)
+
+    cur      = data["current"]
+    daily    = data["daily"]
     units    = cfg.get("owm_units", "imperial")
-    if not api_key or not location:
-        raise HTTPException(status_code=404, detail="Weather not configured")
-    async with httpx.AsyncClient(timeout=10) as client:
-        res = await client.get(
-            "https://api.openweathermap.org/data/2.5/weather",
-            params={"q": _owm_location(location), "appid": api_key, "units": units},
-        )
-    if res.status_code != 200:
-        raise HTTPException(status_code=res.status_code, detail="OWM API error")
-    data = res.json()
-    unit_symbol = "°F" if units == "imperial" else "°C"
-    # Build a human-readable location label: if the user stored a bare ZIP, use OWM's city name;
-    # otherwise show the configured string as-is (e.g. "Moraga, CA").
-    raw_loc = cfg.get("owm_location", "")
-    if raw_loc.replace(",US", "").strip().isdigit():
-        location_label = data.get("name", raw_loc)
-    else:
-        location_label = raw_loc
+    unit_sym = "°F" if units == "imperial" else "°C"
+    wind_lbl = "mph" if units == "imperial" else "km/h"
+    tz_off   = data.get("utc_offset_seconds", 0)
+    code     = int(cur.get("weather_code", 0))
+
+    sr = _iso_to_ts(daily["sunrise"][0], tz_off) if daily.get("sunrise") else 0
+    ss = _iso_to_ts(daily["sunset"][0],  tz_off) if daily.get("sunset")  else 0
+
+    hi = round(daily["temperature_2m_max"][0]) if daily.get("temperature_2m_max") else ""
+    lo = round(daily["temperature_2m_min"][0]) if daily.get("temperature_2m_min") else ""
+
     return {
-        "temp":           round(data["main"]["temp"]),
-        "feels_like":     round(data["main"]["feels_like"]),
-        "humidity":       data["main"]["humidity"],
-        "description":    data["weather"][0]["description"].title(),
-        "icon":           data["weather"][0]["icon"],
-        "city":           data["name"],
-        "location_label": location_label,
-        "unit_symbol":    unit_symbol,
-        "wind_speed":     round(data["wind"]["speed"]),
-        "wind_unit":      "mph" if units == "imperial" else "m/s",
-        "sunrise":        data["sys"]["sunrise"],
-        "sunset":         data["sys"]["sunset"],
-        "temp_min":       round(data["main"]["temp_min"]),
-        "temp_max":       round(data["main"]["temp_max"]),
+        "temp":           round(cur["temperature_2m"]),
+        "feels_like":     round(cur["apparent_temperature"]),
+        "humidity":       int(cur["relative_humidity_2m"]),
+        "description":    _WMO_DESC.get(code, "Unknown"),
+        "icon":           _WMO_ICON.get(code, "01d"),
+        "location_label": cfg.get("owm_location", ""),
+        "unit_symbol":    unit_sym,
+        "wind_speed":     round(cur["wind_speed_10m"]),
+        "wind_unit":      wind_lbl,
+        "sunrise":        sr,
+        "sunset":         ss,
+        "temp_min":       lo,
+        "temp_max":       hi,
     }
 
 
 @router.get("/forecast")
 async def get_forecast():
-    cfg = _read_config()
-    api_key  = cfg.get("owm_api_key")
-    location = cfg.get("owm_location")
+    cfg  = _read_config()
+    data = await _fetch_om(cfg)
+
     units    = cfg.get("owm_units", "imperial")
-    if not api_key or not location:
-        raise HTTPException(status_code=404, detail="Weather not configured")
+    unit_sym = "°F" if units == "imperial" else "°C"
+    daily    = data["daily"]
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        res = await client.get(
-            "https://api.openweathermap.org/data/2.5/forecast",
-            params={"q": _owm_location(location), "appid": api_key, "units": units, "cnt": 40},
-        )
-    if res.status_code != 200:
-        raise HTTPException(status_code=res.status_code, detail="OWM API error")
-
-    data       = res.json()
-    tz_offset  = data.get("city", {}).get("timezone", 0)  # seconds from UTC
-    unit_symbol = "°F" if units == "imperial" else "°C"
-
-    days = defaultdict(list)
-    for entry in data["list"]:
-        local_dt = datetime.fromtimestamp(entry["dt"] + tz_offset, tz=timezone.utc)
-        days[local_dt.strftime("%Y-%m-%d")].append(entry)
+    dates  = daily.get("time", [])
+    highs  = daily.get("temperature_2m_max", [])
+    lows   = daily.get("temperature_2m_min", [])
+    codes  = daily.get("weather_code", [])
 
     result = []
-    for day_key in sorted(days.keys())[:5]:
-        entries = days[day_key]
-        temps   = [e["main"]["temp"] for e in entries]
-        # Pick entry closest to 2 PM local time — searching UTC strings gives
-        # early-morning local entries with night icon codes (01n = moon, etc.).
-        rep = min(entries, key=lambda e: abs(
-            datetime.fromtimestamp(e["dt"] + tz_offset, tz=timezone.utc).hour - 14
-        ))
-        raw_icon = rep["weather"][0]["icon"]
-        # Always use daytime variant — midday-UTC selection falls in early AM Pacific,
-        # yielding night codes (01n = moon) that look like circles on the display.
-        day_icon = raw_icon[:-1] + "d" if raw_icon.endswith("n") else raw_icon
+    for i, day_date in enumerate(dates[:6]):
+        code = int(codes[i]) if i < len(codes) else 0
         result.append({
-            "date":        day_key,
-            "high":        round(max(temps)),
-            "low":         round(min(temps)),
-            "icon":        day_icon,
-            "description": rep["weather"][0]["description"].title(),
+            "date":        day_date,
+            "high":        round(highs[i]) if i < len(highs) else "",
+            "low":         round(lows[i])  if i < len(lows)  else "",
+            "icon":        _WMO_ICON.get(code, "01d"),
+            "description": _WMO_DESC.get(code, "Unknown"),
         })
 
-    return {"days": result, "unit_symbol": unit_symbol}
+    return {"days": result, "unit_symbol": unit_sym}

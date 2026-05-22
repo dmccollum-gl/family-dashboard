@@ -68,20 +68,23 @@ def save_oauth_config(body: dict):
 def get_weather_config():
     cfg = _read_config()
     return {
-        "api_key":  _MASKED if cfg.get("owm_api_key") else "",
-        "location": cfg.get("owm_location", ""),
-        "units":    cfg.get("owm_units", "imperial"),
-        "configured": bool(cfg.get("owm_api_key") and cfg.get("owm_location")),
+        "location":   cfg.get("owm_location", ""),
+        "units":      cfg.get("owm_units", "imperial"),
+        "configured": bool(cfg.get("owm_location")),
     }
 
 
 @router.put("/weather")
 def save_weather_config(body: dict):
     updates = {}
-    if body.get("api_key") and body["api_key"] != _MASKED:
-        updates["owm_api_key"] = body["api_key"]
     if "location" in body:
-        updates["owm_location"] = body["location"]
+        new_loc = body["location"]
+        updates["owm_location"] = new_loc
+        # Clear geocoding cache if address changed so it re-geocodes on next fetch.
+        if new_loc != _read_config().get("owm_location"):
+            updates["_geo_for"] = None
+            updates["_geo_lat"] = None
+            updates["_geo_lon"] = None
     if "units" in body:
         updates["owm_units"] = body["units"]
     if updates:

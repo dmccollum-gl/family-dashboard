@@ -99,17 +99,14 @@ function OAuthSettings() {
 }
 
 function WeatherSettings() {
-  const [apiKey,   setApiKey]   = useState("");
   const [location, setLocation] = useState("");
   const [units,    setUnits]    = useState("imperial");
-  const [showKey,  setShowKey]  = useState(false);
   const [saving,   setSaving]   = useState(false);
   const [msg,      setMsg]      = useState(null);
   const [error,    setError]    = useState(null);
 
   useEffect(() => {
     api.get("/api/settings/weather").then(res => {
-      setApiKey(res.data.api_key || "");
       setLocation(res.data.location || "");
       setUnits(res.data.units || "imperial");
     }).catch(() => {});
@@ -118,40 +115,23 @@ function WeatherSettings() {
   const handleSave = async () => {
     setSaving(true); setMsg(null); setError(null);
     try {
-      await api.put("/api/settings/weather", { api_key: apiKey, location, units });
+      await api.put("/api/settings/weather", { location, units });
       setMsg("Weather settings saved.");
-      if (apiKey && apiKey !== "••••••••") setApiKey("••••••••");
     } catch {
       setError("Failed to save.");
     } finally { setSaving(false); }
   };
 
   return (
-    <Section icon={<CloudIcon />} title="OpenWeatherMap">
+    <Section icon={<CloudIcon />} title="Weather (Open-Meteo)">
       <Typography variant="body2" color="text.secondary">
-        Free API key at <a href="https://openweathermap.org/api" target="_blank" rel="noreferrer">openweathermap.org</a>.
+        Powered by <a href="https://open-meteo.com" target="_blank" rel="noreferrer">Open-Meteo</a> — no API key required.
+        Enter any address, city, or ZIP code; coordinates are looked up automatically.
       </Typography>
-      <TextField
-        label="API Key" size="small" fullWidth
-        type={showKey ? "text" : "password"}
-        value={apiKey} onChange={e => setApiKey(e.target.value)}
-        placeholder="Paste your OWM API key"
-        InputProps={{
-          endAdornment: (
-            <InputAdornment position="end">
-              <Tooltip title={showKey ? "Hide" : "Show"}>
-                <IconButton size="small" onClick={() => setShowKey(v => !v)}>
-                  {showKey ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
-                </IconButton>
-              </Tooltip>
-            </InputAdornment>
-          ),
-        }}
-      />
       <TextField
         label="Location" size="small" fullWidth
         value={location} onChange={e => setLocation(e.target.value)}
-        placeholder="e.g. Nashville, TN  or  37201,US"
+        placeholder="e.g. Moraga, CA  or  94556  or  1600 Pennsylvania Ave NW, Washington DC"
       />
       <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
         <Typography variant="body2" color="text.secondary">Units:</Typography>

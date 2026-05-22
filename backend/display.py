@@ -453,6 +453,15 @@ def _hex_rgb(h: str) -> tuple:
         return (80, 130, 220)
 
 
+def _event_text_color(bg: tuple) -> tuple:
+    """Return black or white for maximum contrast against bg (WCAG relative luminance)."""
+    def _lin(v: int) -> float:
+        s = v / 255
+        return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+    lum = 0.2126 * _lin(bg[0]) + 0.7152 * _lin(bg[1]) + 0.0722 * _lin(bg[2])
+    return (0, 0, 0) if lum > 0.179 else (255, 255, 255)
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # THEME
 # ════════════════════════════════════════════════════════════════════════════
@@ -865,7 +874,7 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         sh   = pygame.Surface((ew - 2, sh_h), pygame.SRCALPHA)
         sh.fill((255, 255, 255, 30))
         surf.blit(sh, (ex + 1, ey + 1))
-        surf.blit(fnt_ad.render(_trunc(ev["title"], fnt_ad, ew - 4), True, (0, 0, 0)),
+        surf.blit(fnt_ad.render(_trunc(ev["title"], fnt_ad, ew - 4), True, _event_text_color(clr)),
                   (ex + 2, ey + (eh - fnt_ad.get_height()) // 2))
 
     def _clamp(v, lo, hi):
@@ -900,11 +909,12 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             sheen = pygame.Surface((ev_w - 2, sh_h), pygame.SRCALPHA)
             sheen.fill((255, 255, 255, 22))
             surf.blit(sheen, (int(ev_x) + 1, int(ev_y) + 1))
-        fnt = _font(14 if ev_h < 40 else 16)
-        surf.blit(fnt.render(_trunc(ev["title"], fnt, ev_w - 6), True, (0, 0, 0)),
+        fnt      = _font(14 if ev_h < 40 else 16)
+        ev_txt_c = _event_text_color(clr)
+        surf.blit(fnt.render(_trunc(ev["title"], fnt, ev_w - 6), True, ev_txt_c),
                   (ev_x + 6, ev_y + 2))
         if ev_h >= 40:
-            t2 = _font(13).render(ev["start"].strftime("%-I:%M %p"), True, (30, 30, 30))
+            t2 = _font(13).render(ev["start"].strftime("%-I:%M %p"), True, ev_txt_c)
             surf.blit(t2, (ev_x + 6, ev_y + 20))
 
     # now-line is intentionally omitted here — drawn as an overlay in main()

@@ -585,9 +585,10 @@ def _parse_events(raw: list, start: date, end: date) -> tuple[list, list]:
                 out.append(base)
         return out
 
+    # Use integer UTC-minute keys so different tzinfo representations still match.
     timed   = _merge(timed,   lambda e: (e["title"].strip().lower(),
-                                          e["start"].replace(second=0, microsecond=0),
-                                          e["end"].replace(second=0, microsecond=0)))
+                                          int(e["start"].timestamp()) // 60,
+                                          int(e["end"].timestamp()) // 60))
     all_day = _merge(all_day, lambda e: (e["title"].strip().lower(),
                                           e["start"].date(), e["end"].date()))
 

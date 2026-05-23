@@ -8,10 +8,10 @@ A Raspberry Pi kiosk for a family: full-screen Pygame display showing a shared G
 - HDMI display, no keyboard/mouse attached — display is view-only
 
 ## Pi deployment
-- IP: `10.115.115.243` (static DHCP lease — permanent)
+- IP: `10.115.115.61` (static DHCP lease — permanent)
 - User/pass: `dashboard` / `dashboard`
-- SSH helper: `sshpass -p dashboard ssh -o StrictHostKeyChecking=no dashboard@10.115.115.243`
-- SCP helper: `sshpass -p dashboard scp -o StrictHostKeyChecking=no <file> dashboard@10.115.115.243:<dest>`
+- SSH helper: `sshpass -p dashboard ssh -o StrictHostKeyChecking=no dashboard@10.115.115.61`
+- SCP helper: `sshpass -p dashboard scp -o StrictHostKeyChecking=no <file> dashboard@10.115.115.61:<dest>`
 - MOTD always prints to stderr — harmless noise, check actual exit codes or `echo ok`
 
 ## Paths on Pi

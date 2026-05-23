@@ -14,7 +14,7 @@ import WifiIcon           from "@mui/icons-material/Wifi";
 import WifiOffIcon        from "@mui/icons-material/WifiOff";
 import RouterIcon         from "@mui/icons-material/Router";
 
-const STEPS = ["WiFi Network", "Device Info", "Activation", "Applying"];
+const STEPS = ["WiFi Network", "Device Info", "Applying"];
 
 // Map signal strength (0-100) to 1-4 bars label
 function signalLabel(s) {
@@ -64,7 +64,15 @@ function WifiStep({ value, onChange, onNext }) {
     }
   }, []);
 
+  // Initial scan
   useEffect(() => { scan(); }, [scan]);
+
+  // Auto-rescan every 20 s until the user picks a network
+  useEffect(() => {
+    if (value.ssid || manual) return;
+    const id = setInterval(scan, 20000);
+    return () => clearInterval(id);
+  }, [scan, value.ssid, manual]);
 
   const selectNetwork = (ssid) => onChange({ ...value, ssid, password: "" });
   const canAdvance    = value.ssid && (value.password || networks.find(n => n.ssid === value.ssid && n.security === "none"));
@@ -78,7 +86,11 @@ function WifiStep({ value, onChange, onNext }) {
         <Box>
           <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
             <Typography variant="body2" color="text.secondary">
-              {scanning ? "Scanning…" : `${networks.length} network${networks.length !== 1 ? "s" : ""} found`}
+              {scanning
+                ? "Scanning…"
+                : networks.length > 0
+                  ? `${networks.length} network${networks.length !== 1 ? "s" : ""} found`
+                  : "No networks found — retrying every 20 s"}
             </Typography>
             <IconButton size="small" onClick={scan} disabled={scanning}>
               <RefreshIcon fontSize="small" />
@@ -185,7 +197,7 @@ function WifiStep({ value, onChange, onNext }) {
 
 // ─── Step 1: Device info ─────────────────────────────────────────────────────
 
-function DeviceStep({ value, onChange, onNext, onBack }) {
+function DeviceStep({ value, onChange, onNext, onBack, submitting }) {
   const canAdvance = value.device_name.trim() && value.city.trim();
   return (
     <Stack spacing={3}>
@@ -208,42 +220,8 @@ function DeviceStep({ value, onChange, onNext, onBack }) {
         helperText="Used for the weather display"
       />
       <Stack direction="row" spacing={2}>
-        {onBack && <Button variant="outlined" onClick={onBack} fullWidth>Back</Button>}
-        <Button variant="contained" disabled={!canAdvance} onClick={onNext} fullWidth>
-          Next
-        </Button>
-      </Stack>
-    </Stack>
-  );
-}
-
-// ─── Step 2: Activation code ─────────────────────────────────────────────────
-
-function ActivationStep({ value, onChange, onNext, onBack, submitting }) {
-  return (
-    <Stack spacing={3}>
-      <Typography variant="h6">Activation code</Typography>
-      <Typography variant="body2" color="text.secondary">
-        Enter the activation code from your account dashboard. This links this
-        device to your subscription.
-      </Typography>
-      <TextField
-        label="Activation code"
-        placeholder="e.g. 123456"
-        value={value.activation_code}
-        onChange={e => onChange({ ...value, activation_code: e.target.value })}
-        fullWidth
-        autoFocus
-        inputProps={{ inputMode: "numeric", style: { letterSpacing: "0.1em", fontFamily: "monospace" } }}
-      />
-      <Stack direction="row" spacing={2}>
-        <Button variant="outlined" onClick={onBack} disabled={submitting} fullWidth>Back</Button>
-        <Button
-          variant="contained"
-          disabled={!value.activation_code.trim() || submitting}
-          onClick={onNext}
-          fullWidth
-        >
+        {onBack && <Button variant="outlined" onClick={onBack} disabled={submitting} fullWidth>Back</Button>}
+        <Button variant="contained" disabled={!canAdvance || submitting} onClick={onNext} fullWidth>
           {submitting ? <CircularProgress size={20} color="inherit" /> : "Apply Settings"}
         </Button>
       </Stack>
@@ -251,7 +229,7 @@ function ActivationStep({ value, onChange, onNext, onBack, submitting }) {
   );
 }
 
-// ─── Step 3: Applying / Result ───────────────────────────────────────────────
+// ─── Step 2: Applying / Result ───────────────────────────────────────────────
 
 function ApplyingStep({ success, error, ssid, deviceName, alreadyConnected }) {
   const hostname = (deviceName || "dashboard")
@@ -324,13 +302,13 @@ export default function Setup() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult]         = useState(null); // null | {success, error}
   const [netStatus, setNetStatus]   = useState(null); // {connected, connection_type, ssid}
+  const [rebooting, setRebooting]   = useState(false);
 
   const [form, setForm] = useState({
-    ssid:            "",
-    password:        "",
-    device_name:     "",
-    city:            "",
-    activation_code: "",
+    ssid:        "",
+    password:    "",
+    device_name: "",
+    city:        "",
   });
 
   useEffect(() => {
@@ -351,12 +329,12 @@ export default function Setup() {
 
   const handleSubmit = async () => {
     setSubmitting(true);
-    setStep(3);
+    setStep(2);
     try {
       const res = await fetch("/api/setup/configure", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ ...form, already_connected: alreadyConnected }),
+        body:    JSON.stringify({ ...form, activation_code: "", already_connected: alreadyConnected }),
       });
       const data = await res.json();
       setResult(data.success ? { success: true } : { error: data.error || "Unknown error" });
@@ -364,6 +342,16 @@ export default function Setup() {
       setResult({ error: e.message });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleReboot = async () => {
+    if (!window.confirm("Reboot the Pi now?")) return;
+    setRebooting(true);
+    try {
+      await fetch("/api/setup/reboot", { method: "POST" });
+    } catch {
+      // expected — Pi reboots and drops the connection
     }
   };
 
@@ -419,6 +407,21 @@ export default function Setup() {
           </Typography>
         </Stack>
 
+        {/* Persistent reboot button */}
+        {step !== 2 && (
+          <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
+            <Button
+              size="small"
+              variant="outlined"
+              color="warning"
+              onClick={handleReboot}
+              disabled={rebooting || submitting}
+            >
+              {rebooting ? "Rebooting…" : "Reboot Pi"}
+            </Button>
+          </Box>
+        )}
+
         {/* Stepper */}
         <Stepper activeStep={step} alternativeLabel sx={{ mb: 4 }}>
           {STEPS.map(label => (
@@ -444,20 +447,12 @@ export default function Setup() {
             <DeviceStep
               value={form}
               onChange={setForm}
-              onNext={() => setStep(2)}
-              onBack={alreadyConnected ? null : () => setStep(0)}
-            />
-          )}
-          {step === 2 && (
-            <ActivationStep
-              value={form}
-              onChange={setForm}
               onNext={handleSubmit}
-              onBack={() => setStep(1)}
+              onBack={alreadyConnected ? null : () => setStep(0)}
               submitting={submitting}
             />
           )}
-          {step === 3 && (
+          {step === 2 && (
             <ApplyingStep
               success={result?.success}
               error={result?.error}

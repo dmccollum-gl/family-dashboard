@@ -115,16 +115,18 @@ def save_rss_config(body: dict):
 
 # ── Display settings ───────────────────────────────────────────────────────────
 
-VALID_THEMES = {"auto", "light", "dark"}
-VALID_VIEWS  = {"day", "week", "2week", "month", "rolling"}
+VALID_THEMES        = {"auto", "light", "dark"}
+VALID_VIEWS         = {"day", "week", "2week", "month", "rolling"}
+VALID_WEATHER_VIEWS = {"daily", "hourly"}
 
 
 @router.get("/display")
 def get_display_config():
     cfg = _read_config()
     return {
-        "theme": cfg.get("display_theme", "auto"),
-        "view":  cfg.get("display_view",  "week"),
+        "theme":        cfg.get("display_theme",        "auto"),
+        "view":         cfg.get("display_view",         "week"),
+        "weather_view": cfg.get("display_weather_view", "daily"),
     }
 
 
@@ -135,6 +137,8 @@ def save_display_config(body: dict):
         updates["display_theme"] = body["theme"]
     if body.get("view") in VALID_VIEWS:
         updates["display_view"] = body["view"]
+    if body.get("weather_view") in VALID_WEATHER_VIEWS:
+        updates["display_weather_view"] = body["weather_view"]
     if updates:
         _write_config(updates)
     return {"status": "saved"}

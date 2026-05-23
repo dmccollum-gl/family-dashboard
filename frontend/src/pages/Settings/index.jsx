@@ -1,26 +1,30 @@
 import { useState, useEffect, useCallback } from "react";
 import {
-  Box, Typography, Paper, Button, Divider, Alert, TextField,
+  Box, Typography, Button, Divider, Alert, TextField,
   CircularProgress, List, ListItem, Avatar, Chip, Menu, MenuItem,
   Dialog, DialogTitle, DialogContent, DialogActions,
   Switch, ListItemText, ListItemIcon, IconButton, Tooltip,
   Checkbox, Radio, RadioGroup, FormControlLabel, FormControl, FormLabel,
   ToggleButton, ToggleButtonGroup,
+  Accordion, AccordionSummary, AccordionDetails,
 } from "@mui/material";
-import SaveIcon             from "@mui/icons-material/Save";
-import AccountCircleIcon    from "@mui/icons-material/AccountCircle";
-import DashboardIcon        from "@mui/icons-material/Dashboard";
-import LogoutIcon           from "@mui/icons-material/Logout";
-import CalendarMonthIcon    from "@mui/icons-material/CalendarMonth";
-import DeleteIcon           from "@mui/icons-material/Delete";
-import RefreshIcon          from "@mui/icons-material/Refresh";
-import MoreVertIcon         from "@mui/icons-material/MoreVert";
-import GroupAddIcon         from "@mui/icons-material/GroupAdd";
-import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
-import AddIcon              from "@mui/icons-material/Add";
-import RssFeedIcon          from "@mui/icons-material/RssFeed";
-import CloudIcon            from "@mui/icons-material/Cloud";
-import ClearIcon            from "@mui/icons-material/Clear";
+import ExpandMoreIcon        from "@mui/icons-material/ExpandMore";
+import SaveIcon              from "@mui/icons-material/Save";
+import AccountCircleIcon     from "@mui/icons-material/AccountCircle";
+import DashboardIcon         from "@mui/icons-material/Dashboard";
+import LogoutIcon            from "@mui/icons-material/Logout";
+import CalendarMonthIcon     from "@mui/icons-material/CalendarMonth";
+import DeleteIcon            from "@mui/icons-material/Delete";
+import RefreshIcon           from "@mui/icons-material/Refresh";
+import MoreVertIcon          from "@mui/icons-material/MoreVert";
+import GroupAddIcon          from "@mui/icons-material/GroupAdd";
+import AddCircleOutlineIcon  from "@mui/icons-material/AddCircleOutline";
+import AddIcon               from "@mui/icons-material/Add";
+import RssFeedIcon           from "@mui/icons-material/RssFeed";
+import CloudIcon             from "@mui/icons-material/Cloud";
+import ClearIcon             from "@mui/icons-material/Clear";
+import TvIcon                from "@mui/icons-material/Tv";
+import ReplayIcon            from "@mui/icons-material/Replay";
 import { googleLogout, useGoogleLogin } from "@react-oauth/google";
 import { useNavigate } from "react-router-dom";
 import api from "../../api/client";
@@ -54,18 +58,37 @@ function extractCalendarId(raw) {
   return s;
 }
 
-// ── Section wrapper ────────────────────────────────────────────────────────────
+// ── Collapsible section wrapper ────────────────────────────────────────────────
 
-function Section({ icon, title, children }) {
+function Section({ icon, title, children, defaultExpanded = true }) {
   return (
-    <Paper variant="outlined" sx={{ p: 3, display: "flex", flexDirection: "column", gap: 2 }}>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+    <Accordion
+      defaultExpanded={defaultExpanded}
+      disableGutters
+      elevation={0}
+      sx={{
+        border: "1px solid",
+        borderColor: "divider",
+        borderRadius: "8px !important",
+        overflow: "hidden",
+        "&:before": { display: "none" },
+      }}
+    >
+      <AccordionSummary
+        expandIcon={<ExpandMoreIcon />}
+        sx={{ px: 3, py: 1.5, "& .MuiAccordionSummary-content": { alignItems: "center", gap: 1 } }}
+      >
         <Box sx={{ color: "primary.main", display: "flex" }}>{icon}</Box>
         <Typography variant="h6" fontWeight={600}>{title}</Typography>
-      </Box>
-      <Divider />
-      {children}
-    </Paper>
+      </AccordionSummary>
+      <AccordionDetails sx={{
+        px: 3, py: 2.5,
+        display: "flex", flexDirection: "column", gap: 2,
+        borderTop: "1px solid", borderColor: "divider",
+      }}>
+        {children}
+      </AccordionDetails>
+    </Accordion>
   );
 }
 
@@ -180,15 +203,15 @@ function FamilySharingDialog({ cal, ownerEmail, open, onClose }) {
   );
 }
 
-// ── Assign Calendar dialog (click a calendar → assign primary/secondary users) ─
+// ── Assign Calendar dialog ─────────────────────────────────────────────────────
 
 function AssignCalendarDialog({ cal, open, onClose }) {
-  const [members,    setMembers]    = useState([]);
-  const [primary,    setPrimary]    = useState("");
-  const [secondary,  setSecondary]  = useState(new Set());
-  const [busy,       setBusy]       = useState(false);
-  const [msg,        setMsg]        = useState(null);
-  const [error,      setError]      = useState(null);
+  const [members,   setMembers]   = useState([]);
+  const [primary,   setPrimary]   = useState("");
+  const [secondary, setSecondary] = useState(new Set());
+  const [busy,      setBusy]      = useState(false);
+  const [msg,       setMsg]       = useState(null);
+  const [error,     setError]     = useState(null);
 
   useEffect(() => {
     if (!open || !cal) return;
@@ -460,12 +483,7 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
           const hasOverride = calColors.has(cal.id);
           const swatchColor = calColors.get(cal.id) || userColor;
           return (
-            <ListItem
-              key={cal.id}
-              disableGutters
-              sx={{ px: 1.5, py: 0.5 }}
-            >
-              {/* Clickable name area → opens Assign dialog */}
+            <ListItem key={cal.id} disableGutters sx={{ px: 1.5, py: 0.5 }}>
               <Box
                 sx={{ flex: 1, display: "flex", alignItems: "center", gap: 1, cursor: "pointer",
                       minWidth: 0, pr: 1, borderRadius: 1,
@@ -481,9 +499,7 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
                   </Typography>
                 </Box>
               </Box>
-              {/* Controls */}
               <Box sx={{ display: "flex", alignItems: "center", flexShrink: 0, gap: 0.25 }}>
-                {/* Per-calendar color override */}
                 <Tooltip title={hasOverride ? "Custom dashboard color — click to change" : "Click to set a custom dashboard color for this calendar"}>
                   <Box component="label" sx={{ display: "flex", alignItems: "center", cursor: "pointer", position: "relative" }}>
                     <Box sx={{
@@ -534,7 +550,6 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
         {selected.size} of {calendars.length} shown on dashboard
       </Typography>
 
-      {/* Per-calendar action menu */}
       <Menu anchorEl={menuState?.anchor} open={!!menuState} onClose={() => setMenuState(null)}>
         <MenuItem onClick={() => { setAssignDialog(menuState.cal); setMenuState(null); }}>
           Assign to dashboard users…
@@ -552,7 +567,6 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
         ]}
       </Menu>
 
-      {/* Copy / Transfer dialog */}
       <Dialog open={!!dialog} onClose={() => setDialog(null)} maxWidth="xs" fullWidth>
         <DialogTitle>{dialog?.type === "copy" ? "Copy calendar to…" : "Transfer calendar to…"}</DialogTitle>
         <DialogContent>
@@ -577,7 +591,6 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
         </DialogActions>
       </Dialog>
 
-      {/* Confirmation dialog */}
       <Dialog open={!!confirm} onClose={() => setConfirm(null)} maxWidth="xs" fullWidth>
         <DialogTitle>{confirm?.title}</DialogTitle>
         <DialogContent>
@@ -591,7 +604,6 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
         </DialogActions>
       </Dialog>
 
-      {/* Family Sharing dialog */}
       <FamilySharingDialog
         cal={shareDialog}
         ownerEmail={email}
@@ -599,7 +611,6 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
         onClose={() => setShareDialog(null)}
       />
 
-      {/* Assign to dashboard users dialog */}
       <AssignCalendarDialog
         cal={assignDialog}
         open={!!assignDialog}
@@ -616,7 +627,7 @@ function MyAccountInner({ hasSecret }) {
   const [color,     setColor]     = useState("#1976d2");
   const [hexDraft,  setHexDraft]  = useState("#1976d2");
   const [selected,  setSelected]  = useState(new Set());
-  const [calColors, setCalColors] = useState(new Map()); // calId → override color string
+  const [calColors, setCalColors] = useState(new Map());
   const [saving,    setSaving]    = useState(false);
   const [signing,   setSigning]   = useState(false);
   const [msg,       setMsg]       = useState(null);
@@ -859,7 +870,7 @@ function AddCalendar() {
   };
 
   return (
-    <Section icon={<AddCircleOutlineIcon />} title="Add Calendar by URL">
+    <Section icon={<AddCircleOutlineIcon />} title="Add Calendar by URL" defaultExpanded={false}>
       <Typography variant="body2" color="text.secondary">
         Add any Google Calendar by URL or ID and assign it to dashboard users.
         The primary user's events appear on the display; secondary users get it
@@ -969,7 +980,7 @@ function FamilyMembers() {
   if (!members.length) return null;
 
   return (
-    <Section icon={<CalendarMonthIcon />} title="Family Members">
+    <Section icon={<CalendarMonthIcon />} title="Family Members" defaultExpanded={false}>
       <Typography variant="body2" color="text.secondary">
         Everyone connected to this dashboard. Remove a member to stop showing their events.
       </Typography>
@@ -1096,7 +1107,7 @@ function RssSettings() {
   };
 
   return (
-    <Section icon={<RssFeedIcon />} title="RSS News Feeds">
+    <Section icon={<RssFeedIcon />} title="RSS News Feeds" defaultExpanded={false}>
       <Typography variant="body2" color="text.secondary">
         Headlines rotate in the news ticker at the top of the dashboard.
         The label is optional and appears as a source tag.
@@ -1142,6 +1153,123 @@ function RssSettings() {
   );
 }
 
+// ── Pi Display ─────────────────────────────────────────────────────────────────
+
+function PiDisplay() {
+  const [theme,       setTheme]       = useState("auto");
+  const [view,        setView]        = useState("rolling");
+  const [weatherView, setWeatherView] = useState("daily");
+  const [saving,      setSaving]      = useState(false);
+  const [msg,         setMsg]         = useState(null);
+  const [error,       setError]       = useState(null);
+
+  useEffect(() => {
+    api.get("/api/settings/display").then(res => {
+      setTheme(res.data.theme              || "auto");
+      setView(res.data.view                || "rolling");
+      setWeatherView(res.data.weather_view || "daily");
+    }).catch(() => {});
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true); setMsg(null); setError(null);
+    try {
+      await api.put("/api/settings/display", { theme, view, weather_view: weatherView });
+      setMsg("Saved — display updates within 30 seconds.");
+    } catch {
+      setError("Failed to save.");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Section icon={<TvIcon />} title="Pi Display">
+      <Typography variant="body2" color="text.secondary">
+        Controls what's shown on the kiosk screen. Changes are picked up automatically.
+      </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
+        <Typography variant="body2" color="text.secondary" sx={{ minWidth: 80 }}>Theme:</Typography>
+        <ToggleButtonGroup size="small" exclusive value={theme} onChange={(_, v) => { if (v) setTheme(v); }}>
+          <ToggleButton value="auto">Auto</ToggleButton>
+          <ToggleButton value="light">Light</ToggleButton>
+          <ToggleButton value="dark">Dark</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
+        <Typography variant="body2" color="text.secondary" sx={{ minWidth: 80 }}>Calendar:</Typography>
+        <ToggleButtonGroup size="small" exclusive value={view} onChange={(_, v) => { if (v) setView(v); }}>
+          <ToggleButton value="rolling">Rolling Week</ToggleButton>
+          <ToggleButton value="week">Mon–Sun</ToggleButton>
+          <ToggleButton value="2week">2 Week</ToggleButton>
+          <ToggleButton value="month">Month</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
+        <Typography variant="body2" color="text.secondary" sx={{ minWidth: 80 }}>Weather:</Typography>
+        <ToggleButtonGroup size="small" exclusive value={weatherView} onChange={(_, v) => { if (v) setWeatherView(v); }}>
+          <ToggleButton value="daily">Forecast Days</ToggleButton>
+          <ToggleButton value="hourly">Hourly</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+      <Box>
+        <Button variant="contained"
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+          onClick={handleSave} disabled={saving}>
+          Save Display Settings
+        </Button>
+      </Box>
+    </Section>
+  );
+}
+
+// ── Restart Services ───────────────────────────────────────────────────────────
+
+function RestartServices() {
+  const [backendBusy, setBackendBusy] = useState(false);
+  const [displayBusy, setDisplayBusy] = useState(false);
+  const [msg,         setMsg]         = useState(null);
+  const [error,       setError]       = useState(null);
+
+  const restart = async (target) => {
+    const setB = target === "backend" ? setBackendBusy : setDisplayBusy;
+    setB(true); setMsg(null); setError(null);
+    try {
+      await api.post(`/api/settings/restart/${target}`);
+      setMsg(
+        target === "backend"
+          ? "Backend restarting — page will reconnect in a few seconds."
+          : "Pi display restarting."
+      );
+    } catch {
+      setError("Restart command failed.");
+    } finally { setB(false); }
+  };
+
+  return (
+    <Section icon={<ReplayIcon />} title="Restart Services" defaultExpanded={false}>
+      <Typography variant="body2" color="text.secondary">
+        Restart the backend API or the Pi display process without rebooting.
+        The backend briefly drops and reconnects automatically.
+      </Typography>
+      {msg   && <Alert severity="info"  onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
+      <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+        <Button variant="outlined"
+          startIcon={backendBusy ? <CircularProgress size={16} color="inherit" /> : <ReplayIcon />}
+          onClick={() => restart("backend")} disabled={backendBusy || displayBusy}>
+          Restart Backend
+        </Button>
+        <Button variant="outlined"
+          startIcon={displayBusy ? <CircularProgress size={16} color="inherit" /> : <TvIcon />}
+          onClick={() => restart("display")} disabled={backendBusy || displayBusy}>
+          Restart Display
+        </Button>
+      </Box>
+    </Section>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function Settings() {
@@ -1149,20 +1277,22 @@ export default function Settings() {
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "grey.100", py: 4, px: 3 }}>
-      <Box sx={{ maxWidth: 680, mx: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
+      <Box sx={{ maxWidth: 680, mx: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
 
-        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <Typography variant="h4" fontWeight={700}>My Settings</Typography>
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
+          <Typography variant="h4" fontWeight={700}>Settings</Typography>
           <Button variant="outlined" startIcon={<DashboardIcon />} onClick={() => navigate("/")}>
             Back to Dashboard
           </Button>
         </Box>
 
         <MyAccount />
+        <WeatherLocation />
+        <PiDisplay />
         <AddCalendar />
         <FamilyMembers />
-        <WeatherLocation />
         <RssSettings />
+        <RestartServices />
 
       </Box>
     </Box>

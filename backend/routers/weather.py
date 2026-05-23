@@ -104,6 +104,9 @@ async def _fetch_om(cfg: dict) -> dict:
                     "temperature_2m", "relative_humidity_2m",
                     "apparent_temperature", "weather_code", "wind_speed_10m",
                 ]),
+                "hourly":           ",".join([
+                    "temperature_2m", "weather_code", "precipitation_probability",
+                ]),
                 "daily":            ",".join([
                     "temperature_2m_max", "temperature_2m_min",
                     "weather_code", "sunrise", "sunset",
@@ -185,3 +188,46 @@ async def get_forecast():
         })
 
     return {"days": result, "unit_symbol": unit_sym}
+
+
+@router.get("/hourly")
+async def get_hourly_forecast():
+    cfg      = _read_config()
+    data     = await _fetch_om(cfg)
+    units    = cfg.get("owm_units", "imperial")
+    unit_sym = "°F" if units == "imperial" else "°C"
+    hourly   = data.get("hourly", {})
+    tz_off   = data.get("utc_offset_seconds", 0)
+
+    times  = hourly.get("time",                     [])
+    temps  = hourly.get("temperature_2m",            [])
+    codes  = hourly.get("weather_code",              [])
+    precip = hourly.get("precipitation_probability", [])
+
+    # Find the current local hour — Open-Meteo times are local when timezone=auto.
+    now_local = datetime.now(timezone(timedelta(seconds=tz_off)))
+    now_str   = now_local.strftime("%Y-%m-%dT%H:00")
+    start_idx = next((i for i, t in enumerate(times) if t >= now_str), 0)
+
+    result = []
+    for i in range(start_idx, min(start_idx + 12, len(times))):
+        code = int(codes[i]) if i < len(codes) else 0
+        t_str = times[i]   # "2025-01-15T14:00"
+        try:
+            h = int(t_str[11:13])
+            ap = "am" if h < 12 else "pm"
+            d  = h if h <= 12 else h - 12
+            if d == 0:
+                d = 12
+            lbl = f"{d}{ap}"
+        except Exception:
+            lbl = t_str[11:16]
+        result.append({
+            "time":        lbl,
+            "temp":        round(temps[i]) if i < len(temps) else "",
+            "icon":        _WMO_ICON.get(code, "01d"),
+            "description": _WMO_DESC.get(code, "Unknown"),
+            "precip":      int(precip[i]) if i < len(precip) else 0,
+        })
+
+    return {"hours": result, "unit_symbol": unit_sym}

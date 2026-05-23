@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import {
   Box, Typography, Paper, TextField, Button, Divider,
-  ToggleButton, ToggleButtonGroup, IconButton, Alert,
-  CircularProgress, Tooltip, InputAdornment, List, ListItem,
+  IconButton, Alert,
+  CircularProgress, Tooltip, InputAdornment,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
 } from "@mui/material";
 import SaveIcon          from "@mui/icons-material/Save";
@@ -12,8 +12,6 @@ import LockIcon          from "@mui/icons-material/Lock";
 import CloudIcon         from "@mui/icons-material/Cloud";
 import DashboardIcon     from "@mui/icons-material/Dashboard";
 import RestartAltIcon    from "@mui/icons-material/RestartAlt";
-import TvIcon            from "@mui/icons-material/Tv";
-import ReplayIcon        from "@mui/icons-material/Replay";
 import { useNavigate }   from "react-router-dom";
 import api               from "../../api/client";
 
@@ -154,121 +152,6 @@ function WeatherSettings() {
   );
 }
 
-function DisplaySettings() {
-  const [theme,  setTheme]  = useState("auto");
-  const [view,   setView]   = useState("week");
-  const [saving, setSaving] = useState(false);
-  const [msg,    setMsg]    = useState(null);
-  const [error,  setError]  = useState(null);
-
-  useEffect(() => {
-    api.get("/api/settings/display").then(res => {
-      setTheme(res.data.theme || "auto");
-      setView(res.data.view  || "week");
-    }).catch(() => {});
-  }, []);
-
-  const handleSave = async () => {
-    setSaving(true); setMsg(null); setError(null);
-    try {
-      await api.put("/api/settings/display", { theme, view });
-      setMsg("Display settings saved. The Pi screen updates within 30 seconds.");
-    } catch {
-      setError("Failed to save.");
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <Section icon={<TvIcon />} title="Pi Display">
-      <Typography variant="body2" color="text.secondary">
-        Controls the default colour theme and calendar view shown on the physical display.
-        Changes are picked up automatically — no restart needed.
-      </Typography>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
-        <Typography variant="body2" color="text.secondary" sx={{ minWidth: 50 }}>Theme:</Typography>
-        <ToggleButtonGroup size="small" exclusive value={theme}
-          onChange={(_, v) => { if (v) setTheme(v); }}>
-          <ToggleButton value="auto">Auto (sunrise/sunset)</ToggleButton>
-          <ToggleButton value="light">Light</ToggleButton>
-          <ToggleButton value="dark">Dark</ToggleButton>
-        </ToggleButtonGroup>
-      </Box>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
-        <Typography variant="body2" color="text.secondary" sx={{ minWidth: 50 }}>View:</Typography>
-        <ToggleButtonGroup size="small" exclusive value={view}
-          onChange={(_, v) => { if (v) setView(v); }}>
-          <ToggleButton value="day">Day</ToggleButton>
-          <ToggleButton value="week">Week</ToggleButton>
-          <ToggleButton value="2week">2 Week</ToggleButton>
-          <ToggleButton value="month">Month</ToggleButton>
-        </ToggleButtonGroup>
-      </Box>
-      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
-      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
-      <Box>
-        <Button variant="contained"
-          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
-          onClick={handleSave} disabled={saving}>
-          Save Display Settings
-        </Button>
-      </Box>
-    </Section>
-  );
-}
-
-function RestartSection() {
-  const [backendBusy, setBackendBusy] = useState(false);
-  const [displayBusy, setDisplayBusy] = useState(false);
-  const [msg,         setMsg]         = useState(null);
-  const [error,       setError]       = useState(null);
-
-  const restart = async (target) => {
-    const setB = target === "backend" ? setBackendBusy : setDisplayBusy;
-    setB(true); setMsg(null); setError(null);
-    try {
-      await api.post(`/api/settings/restart/${target}`);
-      setMsg(
-        target === "backend"
-          ? "Backend restarting — this page will reconnect in a few seconds."
-          : "Pi display restarting."
-      );
-    } catch {
-      setError("Restart command failed.");
-    } finally {
-      setB(false);
-    }
-  };
-
-  return (
-    <Section icon={<ReplayIcon />} title="Restart Services">
-      <Typography variant="body2" color="text.secondary">
-        Restart the backend API or the Pi display process without rebooting the Pi.
-        The backend briefly drops and reconnects automatically.
-      </Typography>
-      {msg   && <Alert severity="info"  onClose={() => setMsg(null)}>{msg}</Alert>}
-      {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
-      <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
-        <Button
-          variant="outlined"
-          startIcon={backendBusy ? <CircularProgress size={16} color="inherit" /> : <ReplayIcon />}
-          onClick={() => restart("backend")}
-          disabled={backendBusy || displayBusy}
-        >
-          Restart Backend
-        </Button>
-        <Button
-          variant="outlined"
-          startIcon={displayBusy ? <CircularProgress size={16} color="inherit" /> : <TvIcon />}
-          onClick={() => restart("display")}
-          disabled={backendBusy || displayBusy}
-        >
-          Restart Display
-        </Button>
-      </Box>
-    </Section>
-  );
-}
-
 function ResetSection() {
   const [open,    setOpen]    = useState(false);
   const [busy,    setBusy]    = useState(false);
@@ -361,8 +244,6 @@ export default function Admin() {
 
         <OAuthSettings />
         <WeatherSettings />
-        <DisplaySettings />
-        <RestartSection />
         <ResetSection />
 
       </Box>

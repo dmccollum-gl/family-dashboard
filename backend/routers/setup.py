@@ -42,6 +42,36 @@ def _reset_user_data():
         except Exception:
             pass
 
+@router.post("/reboot")
+def reboot_pi():
+    """Reboot the Pi by calling the apply script with no SSID (skips WiFi, just reboots)."""
+    if not _on_pi():
+        return {"success": True}
+    try:
+        hostname = subprocess.run(
+            ["hostname"], capture_output=True, text=True, timeout=5
+        ).stdout.strip() or "cal"
+
+        def _do():
+            import time
+            time.sleep(1.5)
+            try:
+                proc = subprocess.Popen(
+                    ["sudo", "-n", APPLY_SCRIPT, "", hostname],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                proc.communicate(input=b"\n", timeout=120)
+            except Exception:
+                pass
+
+        threading.Thread(target=_do, daemon=True).start()
+        return {"success": True}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 @router.post("/reset")
 def reset_install():
     """Remove all calendar users and RSS feeds; keep OAuth and weather credentials."""
@@ -102,18 +132,28 @@ async def setup_status():
 
 @router.get("/wifi/scan")
 def wifi_scan():
+    # Trigger a rescan on wlan0.  In AP mode this may silently do nothing, but
+    # --rescan yes on the list call below will also attempt it.
     try:
         subprocess.run(
-            ["nmcli", "device", "wifi", "rescan"],
+            ["nmcli", "device", "wifi", "rescan", "ifname", "wlan0"],
             capture_output=True, timeout=10,
         )
     except Exception:
         pass
 
+    # iw-based fallback scan trigger: works even when NM won't rescan in AP mode
+    try:
+        subprocess.run(["iw", "dev", "wlan0", "scan", "trigger"],
+                       capture_output=True, timeout=8)
+    except Exception:
+        pass
+
     try:
         result = subprocess.run(
-            ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
-            capture_output=True, text=True, timeout=15,
+            ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY",
+             "device", "wifi", "list", "ifname", "wlan0", "--rescan", "yes"],
+            capture_output=True, text=True, timeout=20,
         )
         networks, seen = [], set()
         for line in result.stdout.strip().splitlines():

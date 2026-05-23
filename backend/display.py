@@ -80,6 +80,12 @@ LABEL_W      = 52
 ICON_CACHE   = Path("/tmp/dash_icons")
 ICON_CACHE.mkdir(exist_ok=True)
 
+_FONT_SCALE: float = 1.0
+
+def _s(px: int) -> int:
+    """Scale a 1280×720 design-space pixel value to the actual display resolution."""
+    return max(1, int(px * _FONT_SCALE))
+
 DAYS_S   = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 MONTHS_S = ["Jan","Feb","Mar","Apr","May","Jun",
             "Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -207,9 +213,10 @@ _state: dict = {
     # data
     "weather":       None,
     "forecast":      [],
+    "hourly":        [],
     "rss":           [],
     "events":        [],
-    "settings":      {"theme": "auto", "view": "week"},
+    "settings":      {"theme": "auto", "view": "week", "weather_view": "daily"},
     "sysinfo":       {"cpu": "--", "ram": "--"},
     # timestamps (monotonic) — used as cache-invalidation tokens
     "weather_ts":    0.0,
@@ -236,6 +243,11 @@ def _fetch_weather() -> None:
         patch["forecast"] = fc.get("days", []) if isinstance(fc, dict) else []
     except Exception:
         patch["forecast"] = []
+    try:
+        hr = _get_json(f"{API_BASE}/weather/hourly")
+        patch["hourly"] = hr.get("hours", []) if isinstance(hr, dict) else []
+    except Exception:
+        patch["hourly"] = []
     patch["weather_ts"]   = time.monotonic()
     patch["weather_busy"] = False
     with _lock:
@@ -394,22 +406,22 @@ _fonts: dict = {}
 
 
 def _font(size: int, bold: bool = False) -> pygame.font.Font:
-    key = (size, bold)
+    scaled = max(8, int(size * _FONT_SCALE))
+    key = (scaled, bold)
     if key not in _fonts:
-        # Load Liberation Sans TTF directly — crisper than the SysFont name-lookup path.
         try:
             variant = "LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf"
             _fonts[key] = pygame.font.Font(
-                f"/usr/share/fonts/truetype/liberation/{variant}", size)
+                f"/usr/share/fonts/truetype/liberation/{variant}", scaled)
         except Exception:
             for name in ("DejaVu Sans", "Liberation Sans", "FreeSans", "Arial", None):
                 try:
-                    _fonts[key] = pygame.font.SysFont(name, size, bold=bold)
+                    _fonts[key] = pygame.font.SysFont(name, scaled, bold=bold)
                     break
                 except Exception:
                     continue
             else:
-                _fonts[key] = pygame.font.Font(None, size)
+                _fonts[key] = pygame.font.Font(None, scaled)
     return _fonts[key]
 
 
@@ -442,6 +454,37 @@ def _rrect(surf: pygame.Surface, color: tuple, rect: pygame.Rect,
         surf.blit(tmp, rect.topleft)
     else:
         pygame.draw.rect(surf, color, rect, border_radius=radius)
+
+
+def _gradient_rrect(surf: pygame.Surface, colors: list, rect: pygame.Rect,
+                    radius: int = 5, alpha: int = 235) -> None:
+    """Horizontal gradient rounded rect across any number of colour stops."""
+    w, h = rect.width, max(1, rect.height)
+    if not colors or w <= 0:
+        return
+    if len(colors) == 1:
+        _rrect(surf, colors[0], rect, radius, alpha)
+        return
+    gs = pygame.Surface((w, h), pygame.SRCALPHA)
+    n  = len(colors) - 1
+    for xi in range(w):
+        t   = xi / max(w - 1, 1) * n
+        seg = min(int(t), n - 1)
+        ft  = t - seg
+        c1, c2 = colors[seg], colors[seg + 1]
+        gs.set_at((xi, 0), (
+            int(c1[0] + ft * (c2[0] - c1[0])),
+            int(c1[1] + ft * (c2[1] - c1[1])),
+            int(c1[2] + ft * (c2[2] - c1[2])),
+            alpha,
+        ))
+    # Scale the single-row gradient to full height (fast blit-based stretch)
+    gs = pygame.transform.scale(gs, (w, h))
+    # Mask to rounded corners: BLEND_RGBA_MIN clips alpha outside the rect shape
+    mask = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(mask, (255, 255, 255, alpha), (0, 0, w, h), border_radius=radius)
+    gs.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+    surf.blit(gs, rect.topleft)
 
 
 def _hex_rgb(h: str) -> tuple:
@@ -585,11 +628,12 @@ def _parse_events(raw: list, start: date, end: date) -> tuple[list, list]:
                 out.append(base)
         return out
 
-    # Use integer UTC-minute keys so different tzinfo representations still match.
-    timed   = _merge(timed,   lambda e: (e["title"].strip().lower(),
-                                          int(e["start"].timestamp()) // 60,
-                                          int(e["end"].timestamp()) // 60))
-    all_day = _merge(all_day, lambda e: (e["title"].strip().lower(),
+    # Merge on title + start-minute only; dropping end-time tolerates sync drift
+    # where the same invite lands with slightly different durations on two calendars.
+    _nt = lambda s: " ".join(s.strip().lower().split())
+    timed   = _merge(timed,   lambda e: (_nt(e["title"]),
+                                          int(e["start"].timestamp()) // 60))
+    all_day = _merge(all_day, lambda e: (_nt(e["title"]),
                                           e["start"].date(), e["end"].date()))
 
     _layout_timed(timed)
@@ -673,46 +717,42 @@ class _Ticker:
 # TOP BAR  (renders into its own cached surface)
 # ════════════════════════════════════════════════════════════════════════════
 def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
-                 weather, forecast: list, rss: list, ticker: _Ticker) -> None:
+                 weather, forecast: list, hourly: list,
+                 rss: list, ticker: _Ticker, weather_view: str = "daily") -> None:
     surf.fill(C["surface"])
-    # Subtle darkening gradient at the top of the bar for depth
-    grad = pygame.Surface((W, 40), pygame.SRCALPHA)
+    grad = pygame.Surface((W, _s(40)), pygame.SRCALPHA)
     grad.fill((0, 0, 0, 18))
     surf.blit(grad, (0, 0))
-    # Accent line at the bottom instead of a flat gray border
     pygame.draw.line(surf, C["accent"], (0, TOPBAR_H - 2), (W, TOPBAR_H - 2), 2)
 
     now = datetime.now()
 
     # ── Calendar page icon ───────────────────────────────────────────────
-    CAL_X, CAL_Y, CAL_W = 10, 8, 70
-    pygame.draw.rect(surf, C["surface"], (CAL_X, CAL_Y, CAL_W, 80), border_radius=6)
-    pygame.draw.rect(surf, C["border"],  (CAL_X, CAL_Y, CAL_W, 80), 1, border_radius=6)
-    pygame.draw.rect(surf, C["cal_red"], (CAL_X, CAL_Y, CAL_W, 22), border_radius=6)
-    pygame.draw.rect(surf, C["cal_red"], (CAL_X, CAL_Y + 16, CAL_W, 6))
+    CAL_X, CAL_Y, CAL_W, CAL_H = _s(10), _s(8), _s(70), _s(80)
+    pygame.draw.rect(surf, C["surface"], (CAL_X, CAL_Y, CAL_W, CAL_H), border_radius=_s(6))
+    pygame.draw.rect(surf, C["border"],  (CAL_X, CAL_Y, CAL_W, CAL_H), 1, border_radius=_s(6))
+    pygame.draw.rect(surf, C["cal_red"], (CAL_X, CAL_Y, CAL_W, _s(22)), border_radius=_s(6))
+    pygame.draw.rect(surf, C["cal_red"], (CAL_X, CAL_Y + _s(16), CAL_W, _s(6)))
 
     t = _txt(MONTHS_S[now.month - 1], 13, (255, 255, 255), bold=True)
-    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 11)))
+    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + _s(11))))
 
     t = _txt(str(now.day), 30, C["text"], bold=True)
-    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 44)))
+    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + _s(44))))
 
     t = _txt(DAYS_S[now.weekday()], 13, C["subtext"])
-    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + 68)))
+    surf.blit(t, t.get_rect(center=(CAL_X + CAL_W // 2, CAL_Y + _s(68))))
 
     # ── Clock ────────────────────────────────────────────────────────────
     clk_s = _txt(now.strftime("%-I:%M"), 71, C["text"], bold=True)
-    clk_r = clk_s.get_rect(midleft=(CAL_X + CAL_W + 14, TOPBAR_H // 2))
+    clk_r = clk_s.get_rect(midleft=(CAL_X + CAL_W + _s(14), TOPBAR_H // 2))
     surf.blit(clk_s, clk_r)
     ampm_s = _txt(now.strftime("%p"), 18, C["text"])
-    ampm_r = ampm_s.get_rect(topleft=(clk_r.right + 3, clk_r.top + 6))
+    ampm_r = ampm_s.get_rect(topleft=(clk_r.right + _s(3), clk_r.top + _s(6)))
     surf.blit(ampm_s, ampm_r)
-    clock_right = ampm_r.right + 12
+    clock_right = ampm_r.right + _s(12)
 
     # ── Weather (right side) ─────────────────────────────────────────────
-    # Layout (right → left):
-    #   [forecast strip: 4 cols × FC_COL px] [gap] [icon CUR_ICON_SZ] [gap] [text block TEXT_W]
-    # All three sub-sections are computed before blitting to guarantee no overlap.
     wx_left = W
     if weather:
         unit  = weather.get("unit_symbol", "°F")
@@ -727,30 +767,45 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
         desc  = weather.get("description", "")
         loc   = weather.get("location_label", weather.get("city", ""))
 
-        # ── 4-day forecast strip (rightmost) ─────────────────────────────
-        FC_COL   = 62
-        fc_strip = (forecast or [])[1:5]
-        fc_total = len(fc_strip) * FC_COL
-        fc_x0    = W - fc_total - 6
+        # ── Forecast strip (daily or hourly, rightmost) ───────────────────
+        FC_COL = _s(62)
 
-        for i, fd in enumerate(fc_strip):
-            cx = fc_x0 + i * FC_COL + FC_COL // 2
-            fi = _load_icon(fd.get("icon", ""), 44)
-            if fi:
-                surf.blit(fi, fi.get_rect(midtop=(cx, 4)))
-            try:
-                dlbl = DAYS_S[datetime.strptime(fd["date"], "%Y-%m-%d").weekday()]
-            except Exception:
-                dlbl = ""
-            _blit(surf, dlbl,                            11, C["subtext"], cx, 52, anchor="midtop")
-            _blit(surf, f"{fd.get('high', '')}{unit}",  13, C["text"],    cx, 67, bold=True, anchor="midtop")
-            _blit(surf, f"{fd.get('low',  '')}",        11, C["subtext"], cx, 84, anchor="midtop")
+        if weather_view == "hourly":
+            hr_strip = (hourly or [])[:6]
+            fc_total = len(hr_strip) * FC_COL
+            fc_x0    = W - fc_total - _s(6)
+            for i, hr in enumerate(hr_strip):
+                cx = fc_x0 + i * FC_COL + FC_COL // 2
+                fi = _load_icon(hr.get("icon", ""), _s(44))
+                if fi:
+                    surf.blit(fi, fi.get_rect(midtop=(cx, _s(4))))
+                _blit(surf, hr.get("time", ""),              11, C["subtext"], cx, _s(52), anchor="midtop")
+                _blit(surf, f"{hr.get('temp','')}{unit}",   13, C["text"],    cx, _s(67), bold=True, anchor="midtop")
+                pct = hr.get("precip", 0)
+                if pct:
+                    _blit(surf, f"{pct}%",                  11, C["subtext"], cx, _s(84), anchor="midtop")
+        else:
+            fc_strip = (forecast or [])[1:5]
+            fc_total = len(fc_strip) * FC_COL
+            fc_x0    = W - fc_total - _s(6)
+            for i, fd in enumerate(fc_strip):
+                cx = fc_x0 + i * FC_COL + FC_COL // 2
+                fi = _load_icon(fd.get("icon", ""), _s(44))
+                if fi:
+                    surf.blit(fi, fi.get_rect(midtop=(cx, _s(4))))
+                try:
+                    dlbl = DAYS_S[datetime.strptime(fd["date"], "%Y-%m-%d").weekday()]
+                except Exception:
+                    dlbl = ""
+                _blit(surf, dlbl,                            11, C["subtext"], cx, _s(52), anchor="midtop")
+                _blit(surf, f"{fd.get('high', '')}{unit}",  13, C["text"],    cx, _s(67), bold=True, anchor="midtop")
+                _blit(surf, f"{fd.get('low',  '')}",        11, C["subtext"], cx, _s(84), anchor="midtop")
 
         # ── Current weather block (icon + text, left of forecast) ─────────
-        CUR_ICON_SZ = 54
-        TEXT_W      = 185
-        INNER_GAP   = 8
-        block_right = fc_x0 - 2
+        CUR_ICON_SZ = _s(54)
+        TEXT_W      = _s(120)
+        INNER_GAP   = _s(8)
+        block_right = fc_x0 - _s(2)
         block_left  = block_right - CUR_ICON_SZ - INNER_GAP - TEXT_W
 
         ic = _load_icon(icon, CUR_ICON_SZ) if icon else None
@@ -758,19 +813,19 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
             surf.blit(ic, ic.get_rect(midleft=(block_left, TOPBAR_H // 2)))
 
         tx = block_left + CUR_ICON_SZ + INNER_GAP
-        _blit(surf, f"{temp}{unit}",               38, C["accent"],  tx,  4, bold=True)
-        _blit(surf, desc,                          12, C["subtext"], tx, 51)
-        _blit(surf, f"H:{hi}{unit}  L:{lo}{unit}", 12, C["subtext"], tx, 67)
-        _blit(surf, f"{feels}{unit}  {hum}%  {wind} {wunit}", 12, C["subtext"], tx, 82)
+        _blit(surf, f"{temp}{unit}",               38, C["accent"],  tx, _s(4),  bold=True)
+        _blit(surf, desc,                          12, C["subtext"], tx, _s(51))
+        _blit(surf, f"H:{hi}{unit}  L:{lo}{unit}", 12, C["subtext"], tx, _s(67))
+        _blit(surf, f"{feels}{unit}  {hum}%  {wind} {wunit}", 12, C["subtext"], tx, _s(82))
         if loc:
-            _blit(surf, loc,                       11, C["subtext"], tx, 98)
+            _blit(surf, loc,                       11, C["subtext"], tx, _s(98))
 
-        wx_left = block_left - 10
+        wx_left = block_left - _s(10)
 
     # ── RSS ticker (center gap) ──────────────────────────────────────────
     gap_x1 = clock_right
-    gap_x2 = wx_left - 8
-    if gap_x2 - gap_x1 > 60:
+    gap_x2 = wx_left - _s(8)
+    if gap_x2 - gap_x1 > _s(60):
         trect = pygame.Rect(gap_x1, 0, gap_x2 - gap_x1, TOPBAR_H)
         ticker.draw(surf, trect, rss, 30, C["text"])
 
@@ -785,14 +840,14 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
     today      = date.today()
     grid_hours = GRID_END - GRID_START
     col_w      = (w - LABEL_W) // num_days
-    hdr_h      = 24
+    hdr_h      = _s(24)
 
     # Parse events first — needed to compute allday_h before laying out the grid.
     end_date = start + timedelta(days=num_days)
     all_day_evs, timed_evs = _parse_events(events_raw, start, end_date)
 
     # Assign all-day events to rows using a greedy span-aware algorithm.
-    AD_ROW_H   = 26
+    AD_ROW_H   = _s(26)
     MAX_AD_ROWS = 3
     day_rows   = [[False] * MAX_AD_ROWS for _ in range(num_days)]  # day_rows[col][row]
     ad_placed  = []  # (ev, col_start, col_end, row)
@@ -816,7 +871,7 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         (r + 1 for c in range(num_days) for r in range(MAX_AD_ROWS) if day_rows[c][r]),
         default=0,
     )
-    allday_h = rows_needed * AD_ROW_H + 4 if rows_needed else 4
+    allday_h = rows_needed * AD_ROW_H + _s(4) if rows_needed else _s(4)
 
     grid_top = y + hdr_h + allday_h
     grid_h   = h - hdr_h - allday_h
@@ -841,9 +896,9 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         cx  = x + LABEL_W + d * col_w
         lbl = f"{DAYS_S[dt.weekday()]} {dt.day}"
         if dt == today:
-            pill_w = min(col_w - 10, 74)
-            pill_r = pygame.Rect(cx + (col_w - pill_w) // 2, y + 3, pill_w, hdr_h - 6)
-            pygame.draw.rect(surf, C.get("today_hdr", C["accent"]), pill_r, border_radius=10)
+            pill_w = min(col_w - _s(10), _s(74))
+            pill_r = pygame.Rect(cx + (col_w - pill_w) // 2, y + _s(3), pill_w, hdr_h - _s(6))
+            pygame.draw.rect(surf, C.get("today_hdr", C["accent"]), pill_r, border_radius=_s(10))
             _blit(surf, lbl, 13, (255, 255, 255), cx + col_w // 2, y + hdr_h // 2,
                   bold=True, anchor="center")
         else:
@@ -878,7 +933,7 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             ap   = "am" if hr < 12 else "pm"
             disp = hr if hr <= 12 else hr - 12
             _blit(surf, f"{disp}{ap}", 11, C["subtext"],
-                  x + LABEL_W - 4, yy + 2, anchor="topright")
+                  x + LABEL_W - _s(4), yy + _s(2), anchor="topright")
 
     for d in range(1, num_days):
         cx = x + LABEL_W + d * col_w
@@ -887,10 +942,10 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
     # All-day event bars — spanning multiple columns; split vertically for shared events.
     fnt_ad = _font(14)
     for ev, col_s, col_e, row in ad_placed:
-        ex  = x + LABEL_W + col_s * col_w + 2
-        ew  = (col_e - col_s) * col_w - 4
-        ey  = y + hdr_h + 2 + row * AD_ROW_H
-        eh  = AD_ROW_H - 2
+        ex  = x + LABEL_W + col_s * col_w + _s(2)
+        ew  = (col_e - col_s) * col_w - _s(4)
+        ey  = y + hdr_h + _s(2) + row * AD_ROW_H
+        eh  = AD_ROW_H - _s(2)
         color_list = ev.get("color_list")
         if color_list and len(color_list) > 1:
             clrs = [_hex_rgb(c) for c in color_list]
@@ -899,19 +954,19 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             for ci, c in enumerate(clrs):
                 sx   = ex + ci * sw
                 sw_i = sw if ci < n - 1 else (ex + ew - sx)
-                _rrect(surf, c, pygame.Rect(sx, ey, sw_i, eh), 3, 240)
+                _rrect(surf, c, pygame.Rect(sx, ey, sw_i, eh), _s(3), 240)
             avg     = tuple(sum(c[i] for c in clrs) // n for i in range(3))
             txt_clr = _event_text_color(avg)
         else:
             clr = _hex_rgb(ev["color"])
-            _rrect(surf, clr, pygame.Rect(ex, ey, ew, eh), 3, 240)
-            sh_h = max(2, eh // 2)
-            sh   = pygame.Surface((ew - 2, sh_h), pygame.SRCALPHA)
+            _rrect(surf, clr, pygame.Rect(ex, ey, ew, eh), _s(3), 240)
+            sh_h = max(_s(2), eh // 2)
+            sh   = pygame.Surface((ew - _s(2), sh_h), pygame.SRCALPHA)
             sh.fill((255, 255, 255, 30))
-            surf.blit(sh, (ex + 1, ey + 1))
+            surf.blit(sh, (ex + _s(1), ey + _s(1)))
             txt_clr = _event_text_color(clr)
-        surf.blit(fnt_ad.render(_trunc(ev["title"], fnt_ad, ew - 4), True, txt_clr),
-                  (ex + 2, ey + (eh - fnt_ad.get_height()) // 2))
+        surf.blit(fnt_ad.render(_trunc(ev["title"], fnt_ad, ew - _s(4)), True, txt_clr),
+                  (ex + _s(2), ey + (eh - fnt_ad.get_height()) // 2))
 
     def _clamp(v, lo, hi):
         return max(lo, min(hi, v))
@@ -928,41 +983,39 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             continue
         ev_y = grid_top + (s_min - GRID_START * 60) / 60 * row_h
         ev_h = max(16, (e_min - s_min) / 60 * row_h - 2)
-        col  = ev["_col"]
-        tot  = ev["_total"]
-        bx   = x + LABEL_W + d * col_w
-        ev_x = bx + int(col_w * col / tot) + 1
-        ev_w = int(col_w / tot) - 2
+        col    = ev["_col"]
+        tot    = ev["_total"]
+        bx     = x + LABEL_W + d * col_w
+        # True equal-width side-by-side: each slot is (col_w-margin)/N wide
+        slot_w = (col_w - _s(4)) // max(tot, 1)
+        ev_w   = slot_w - _s(2)
+        ev_x   = bx + _s(2) + col * slot_w
         color_list = ev.get("color_list")
         if color_list and len(color_list) > 1:
-            # Shared event: split rect into vertical color strips
-            clrs = [_hex_rgb(c) for c in color_list]
-            n    = len(clrs)
-            sw   = max(1, ev_w // n)
-            for ci, c in enumerate(clrs):
-                sx   = int(ev_x) + ci * sw
-                sw_i = sw if ci < n - 1 else (int(ev_x) + ev_w - sx)
-                _rrect(surf, c, pygame.Rect(sx, int(ev_y), sw_i, int(ev_h)), 4, 235)
+            clrs     = [_hex_rgb(c) for c in color_list]
+            n        = len(clrs)
             avg      = tuple(sum(c[i] for c in clrs) // n for i in range(3))
             ev_txt_c = _event_text_color(avg)
+            _gradient_rrect(surf, clrs,
+                            pygame.Rect(int(ev_x), int(ev_y), ev_w, int(ev_h)),
+                            _s(4), 235)
         else:
             clr = _hex_rgb(ev["color"])
-            _rrect(surf, clr, pygame.Rect(int(ev_x), int(ev_y), ev_w, int(ev_h)), 4, 235)
+            _rrect(surf, clr, pygame.Rect(int(ev_x), int(ev_y), ev_w, int(ev_h)), _s(4), 235)
             stripe_clr = tuple(min(255, c + 65) for c in clr)
-            _rrect(surf, stripe_clr, pygame.Rect(int(ev_x), int(ev_y), 4, int(ev_h)), 4)
+            _rrect(surf, stripe_clr, pygame.Rect(int(ev_x), int(ev_y), _s(4), int(ev_h)), _s(4))
             ev_txt_c = _event_text_color(clr)
-        # Glass sheen over full block regardless of single/multi color
-        if int(ev_h) >= 8:
-            sh_h  = max(3, int(ev_h * 0.38))
-            sheen = pygame.Surface((ev_w - 2, sh_h), pygame.SRCALPHA)
+        if int(ev_h) >= _s(8):
+            sh_h  = max(_s(3), int(ev_h * 0.38))
+            sheen = pygame.Surface((ev_w - _s(2), sh_h), pygame.SRCALPHA)
             sheen.fill((255, 255, 255, 22))
-            surf.blit(sheen, (int(ev_x) + 1, int(ev_y) + 1))
-        fnt = _font(14 if ev_h < 40 else 16)
-        surf.blit(fnt.render(_trunc(ev["title"], fnt, ev_w - 6), True, ev_txt_c),
-                  (ev_x + 6, ev_y + 2))
-        if ev_h >= 40:
+            surf.blit(sheen, (int(ev_x) + _s(1), int(ev_y) + _s(1)))
+        fnt = _font(14 if ev_h < _s(40) else 16)
+        surf.blit(fnt.render(_trunc(ev["title"], fnt, ev_w - _s(6)), True, ev_txt_c),
+                  (ev_x + _s(6), ev_y + _s(2)))
+        if ev_h >= _s(40):
             t2 = _font(13).render(ev["start"].strftime("%-I:%M %p"), True, ev_txt_c)
-            surf.blit(t2, (ev_x + 6, ev_y + 20))
+            surf.blit(t2, (ev_x + _s(6), ev_y + _s(20)))
 
     # now-line is intentionally omitted here — drawn as an overlay in main()
     return allday_h
@@ -988,7 +1041,7 @@ def _draw_nowline(screen: pygame.Surface, C: dict,
 
     grid_hours = GRID_END - GRID_START
     col_w      = (grid_w - LABEL_W) // num_days
-    hdr_h      = 24
+    hdr_h      = _s(24)
     grid_top   = grid_y + hdr_h + allday_h
     usable_h   = grid_h - hdr_h - allday_h
     row_h      = usable_h / grid_hours
@@ -996,13 +1049,11 @@ def _draw_nowline(screen: pygame.Surface, C: dict,
     ny = int(grid_top + (now_min - GRID_START * 60) / 60 * row_h)
     d  = (now.date() - start_date).days
     lx = grid_x + LABEL_W + d * col_w
-    # Soft glow behind the now-line
-    glow = pygame.Surface((col_w + 4, 8), pygame.SRCALPHA)
+    glow = pygame.Surface((col_w + _s(4), _s(8)), pygame.SRCALPHA)
     glow.fill((*C["now_line"], 48))
-    screen.blit(glow, (lx - 2, ny - 4))
-    # Main line + dot
-    pygame.draw.line(screen, C["now_line"], (lx, ny), (lx + col_w, ny), 2)
-    pygame.draw.circle(screen, C["now_line"], (lx, ny), 5)
+    screen.blit(glow, (lx - _s(2), ny - _s(4)))
+    pygame.draw.line(screen, C["now_line"], (lx, ny), (lx + col_w, ny), max(1, _s(2)))
+    pygame.draw.circle(screen, C["now_line"], (lx, ny), _s(5))
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1013,12 +1064,12 @@ def _draw_cardgrid(surf: pygame.Surface, C: dict, events_raw: list,
                    x: int, y: int, w: int, h: int) -> None:
     today  = date.today()
     cell_w = w // 7
-    hdr_h  = 20
+    hdr_h  = _s(20)
     cell_h = (h - hdr_h) // num_weeks
 
     for d in range(7):
         _blit(surf, DAYS_S[d], 13, C["subtext"],
-              x + d * cell_w + cell_w // 2, y + 2, anchor="midtop")
+              x + d * cell_w + cell_w // 2, y + _s(2), anchor="midtop")
 
     end_date = start + timedelta(weeks=num_weeks)
     all_day_evs, timed_evs = _parse_events(events_raw, start, end_date)
@@ -1037,16 +1088,16 @@ def _draw_cardgrid(surf: pygame.Surface, C: dict, events_raw: list,
             _blit(surf, str(dt.day), 13, col, cx + 4, cy + 3, bold=(dt == today))
             day_evs = [e for e in all_evs if e["start"].date() == dt]
             for i, ev in enumerate(day_evs[:3]):
-                ey  = cy + 18 + i * 15
-                ew  = cell_w - 4
+                ey  = cy + _s(18) + i * _s(15)
+                ew  = cell_w - _s(4)
                 clr = _hex_rgb(ev["color"])
-                _rrect(surf, clr, pygame.Rect(cx + 2, ey, ew, 13), 2)
+                _rrect(surf, clr, pygame.Rect(cx + _s(2), ey, ew, _s(13)), _s(2))
                 fnt = _font(10)
-                surf.blit(fnt.render(_trunc(ev["title"], fnt, ew - 4), True, (255, 255, 255)),
-                          (cx + 4, ey + 1))
+                surf.blit(fnt.render(_trunc(ev["title"], fnt, ew - _s(4)), True, (255, 255, 255)),
+                          (cx + _s(4), ey + _s(1)))
             if len(day_evs) > 3:
                 _blit(surf, f"+{len(day_evs)-3}", 10, C["subtext"],
-                      cx + cell_w - 3, cy + cell_h - 14, anchor="topright")
+                      cx + cell_w - _s(3), cy + cell_h - _s(14), anchor="topright")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1058,11 +1109,11 @@ def _draw_footer(surf: pygame.Surface, C: dict, W: int, surf_H: int,
     pygame.draw.rect(surf, C["footer"], (0, fy, W, FOOTER_H))
     pygame.draw.line(surf, C["border"], (0, fy), (W, fy))
     my = fy + FOOTER_H // 2
-    _blit(surf, f"{ip}  {host}", 12, C["subtext"], 8, my, anchor="midleft")
+    _blit(surf, f"{ip}  {host}", 12, C["subtext"], _s(8), my, anchor="midleft")
     _blit(surf, label, 13, C["subtext"], W // 2, my, anchor="center")
     cpu = sysinfo.get("cpu", "--")
     ram = sysinfo.get("ram", "--")
-    _blit(surf, f"CPU {cpu}  RAM {ram}", 12, C["subtext"], W - 8, my, anchor="midright")
+    _blit(surf, f"CPU {cpu}  RAM {ram}", 12, C["subtext"], W - _s(8), my, anchor="midright")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1144,6 +1195,14 @@ def main() -> None:
     pygame.display.set_caption("Family Dashboard")
     clock = pygame.time.Clock()
 
+    # Scale all layout constants to the actual display resolution.
+    global TOPBAR_H, FOOTER_H, LABEL_W, _FONT_SCALE, _fonts
+    _FONT_SCALE = W / 1280
+    TOPBAR_H = int(118 * _FONT_SCALE)
+    FOOTER_H = int(26  * _FONT_SCALE)
+    LABEL_W  = int(52  * _FONT_SCALE)
+    _fonts   = {}  # clear any fonts cached before scale was set
+
     # ── Setup / welcome screen ────────────────────────────────────────────────
     if not _is_configured():
         wifi_qr    = _make_qr_surface(f"WIFI:T:nopass;S:{HOTSPOT_SSID};;")
@@ -1198,7 +1257,7 @@ def main() -> None:
 
     ticker = _Ticker()
     anchor = date.today()
-    cur_allday_h = 26  # kept in sync with _draw_timegrid return value
+    cur_allday_h = _s(26)  # kept in sync with _draw_timegrid return value
 
     # ── Cached surfaces (None = dirty, must be re-rendered) ───────────────────
     topbar_surf: Optional[pygame.Surface] = None
@@ -1206,17 +1265,18 @@ def main() -> None:
 
     # Previous render state — used to detect what changed
     prev: dict = {
-        "theme":       None,   # "light" or "dark"
-        "view":        None,
-        "anchor":      None,
-        "minute":      None,   # (hour, minute)
-        "day":         None,   # date — full grid rebuild at midnight
-        "weather_ts":  -1.0,
-        "calendar_ts": -1.0,
-        "rss_ts":      -1.0,
-        "rss_idx":     -1,
-        "settings_ts": -1.0,
-        "sysinfo_ts":  -1.0,
+        "theme":        None,   # "light" or "dark"
+        "view":         None,
+        "anchor":       None,
+        "minute":       None,   # (hour, minute)
+        "day":          None,   # date — full grid rebuild at midnight
+        "weather_ts":   -1.0,
+        "calendar_ts":  -1.0,
+        "rss_ts":       -1.0,
+        "rss_idx":      -1,
+        "settings_ts":  -1.0,
+        "sysinfo_ts":   -1.0,
+        "weather_view": None,
     }
 
     # Grid area geometry (constant after init)
@@ -1259,6 +1319,7 @@ def main() -> None:
         with _lock:
             snap_weather     = _state["weather"]
             snap_forecast    = list(_state["forecast"])
+            snap_hourly      = list(_state["hourly"])
             snap_rss         = list(_state["rss"])
             snap_events      = list(_state["events"])
             snap_weather_ts  = _state["weather_ts"]
@@ -1309,13 +1370,15 @@ def main() -> None:
             cur_day        != prev["day"]              or  # midnight: headers change
             snap_sysinfo_ts != prev["sysinfo_ts"]          # footer CPU/RAM changed
         )
+        cur_weather_view = snap_settings.get("weather_view", "daily")
         topbar_dirty = (
-            topbar_surf is None                        or
-            cur_theme      != prev["theme"]            or
-            cur_minute     != prev["minute"]           or  # clock update
-            snap_weather_ts != prev["weather_ts"]      or
-            snap_rss_ts    != prev["rss_ts"]           or
-            cur_rss_idx    != prev["rss_idx"]              # ticker advanced
+            topbar_surf is None                              or
+            cur_theme         != prev["theme"]              or
+            cur_minute        != prev["minute"]             or  # clock update
+            snap_weather_ts   != prev["weather_ts"]         or
+            snap_rss_ts       != prev["rss_ts"]             or
+            cur_rss_idx       != prev["rss_idx"]            or  # ticker advanced
+            cur_weather_view  != prev["weather_view"]           # forecast mode changed
         )
 
         needs_flip = grid_dirty or topbar_dirty
@@ -1336,7 +1399,8 @@ def main() -> None:
 
         if topbar_dirty:
             topbar_surf = pygame.Surface((W, TOPBAR_H))
-            _draw_topbar(topbar_surf, C, W, snap_weather, snap_forecast, snap_rss, ticker)
+            _draw_topbar(topbar_surf, C, W, snap_weather, snap_forecast, snap_hourly,
+                         snap_rss, ticker, snap_settings.get("weather_view", "daily"))
 
         # ── Composite + flip ──────────────────────────────────────────────────
         if needs_flip:
@@ -1351,17 +1415,18 @@ def main() -> None:
 
         # ── Update previous-render state ──────────────────────────────────────
         prev.update({
-            "theme":       cur_theme,
-            "view":        view,
-            "anchor":      anchor,
-            "minute":      cur_minute,
-            "day":         cur_day,
-            "weather_ts":  snap_weather_ts,
-            "calendar_ts": snap_cal_ts,
-            "rss_ts":      snap_rss_ts,
-            "rss_idx":     cur_rss_idx,
-            "settings_ts": snap_settings_ts,
-            "sysinfo_ts":  snap_sysinfo_ts,
+            "theme":        cur_theme,
+            "view":         view,
+            "anchor":       anchor,
+            "minute":       cur_minute,
+            "day":          cur_day,
+            "weather_ts":   snap_weather_ts,
+            "calendar_ts":  snap_cal_ts,
+            "rss_ts":       snap_rss_ts,
+            "rss_idx":      cur_rss_idx,
+            "settings_ts":  snap_settings_ts,
+            "sysinfo_ts":   snap_sysinfo_ts,
+            "weather_view": cur_weather_view,
         })
 
         clock.tick(2)   # 2 FPS — responsive enough for keyboard; CPU near-zero between dirty events

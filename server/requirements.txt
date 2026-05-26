@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+pydantic
+httpx
+sqlalchemy
+cryptography
+google-auth
+google-auth-httplib2
+google-api-python-client
+requests

@@ -136,6 +136,44 @@ SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0660"
 SUBSYSTEM=="graphics", KERNEL=="fb*", GROUP="video",  MODE="0660"
 UDEV
 
+# -- cloudflared (Cloudflare Tunnel client) ------------------------------------
+info "Installing cloudflared..."
+CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
+if curl -fsSL --retry 3 --retry-delay 5 -o /usr/local/bin/cloudflared "$CF_URL"; then
+  chmod +x /usr/local/bin/cloudflared
+  info "cloudflared installed: $(/usr/local/bin/cloudflared --version 2>&1 | head -1)"
+else
+  info "WARNING: cloudflared download failed — tunnel will not work until manually installed."
+fi
+
+# Helper script that reads the tunnel token from dashboard_config.json and
+# execs cloudflared.  Exits 0 (clean) when the device is not yet provisioned
+# so systemd does not count it as a failure and enter a restart loop.
+cat > "$APP_DIR/cloudflared-run.sh" << 'CFRUN'
+#!/bin/bash
+CFG=/opt/dashboard/backend/dashboard_config.json
+
+TOKEN=$(python3 -c "
+import json, sys, os
+cfg = os.environ.get('DASHBOARD_CONFIG', '/opt/dashboard/backend/dashboard_config.json')
+try:
+    with open(cfg) as f:
+        d = json.load(f)
+    print(d.get('tunnel_token') or '')
+except Exception:
+    print('')
+" 2>/dev/null)
+
+if [ -z "$TOKEN" ]; then
+    echo "[cloudflared] Not yet provisioned — tunnel token not found in $CFG." >&2
+    exit 0
+fi
+
+exec /usr/local/bin/cloudflared tunnel run --token "$TOKEN"
+CFRUN
+chmod +x "$APP_DIR/cloudflared-run.sh"
+chown "$DASH_USER:$DASH_USER" "$APP_DIR/cloudflared-run.sh"
+
 # -- Setup scripts (captive portal + network apply helper) --------------------
 info "Installing setup scripts..."
 cp /tmp/setup-mode.sh      "$APP_DIR/setup-mode.sh"
@@ -148,11 +186,45 @@ cat > /etc/sudoers.d/dashboard-setup << 'SUDOERS'
 Defaults:dashboard !requiretty
 dashboard ALL=(ALL) NOPASSWD: /opt/dashboard/pi-setup-apply.sh
 dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dashboard-backend
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl start cloudflared
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop cloudflared
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cloudflared
 SUDOERS
 chmod 440 /etc/sudoers.d/dashboard-setup
 
 # -- Copy setup service --------------------------------------------------------
 cp /tmp/dashboard-setup.service /etc/systemd/system/dashboard-setup.service
+
+# -- cloudflared systemd service -----------------------------------------------
+info "Installing cloudflared.service..."
+cat > /etc/systemd/system/cloudflared.service << 'CFSVC'
+[Unit]
+Description=Cloudflare Tunnel for Dashboard
+After=network-online.target dashboard-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dashboard
+Group=dashboard
+
+# Wait up to 90 s for the dashboard backend to report healthy before starting
+# cloudflared. Prevents the tunnel from opening before the app is ready.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 45); do curl -sf http://127.0.0.1:8001/api/health >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1'
+ExecStart=/opt/dashboard/cloudflared-run.sh
+
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloudflared
+
+[Install]
+WantedBy=multi-user.target
+CFSVC
 
 # -- Disable Pi OS first-boot wizard ------------------------------------------
 # Pi OS Bookworm runs userconfig.service on first boot to prompt for a user/
@@ -165,6 +237,10 @@ rm -f /etc/xdg/autostart/piwiz.desktop
 rm -f /usr/share/applications/piwiz.desktop
 # Mark the Pi OS user-config as already done
 mkdir -p /etc/userconf-pi && touch /etc/userconf-pi/done
+
+# -- Enable cloudflared service ------------------------------------------------
+info "Enabling cloudflared.service..."
+systemctl enable cloudflared.service
 
 # -- Enable SSH for remote diagnostics ----------------------------------------
 info "Enabling SSH..."

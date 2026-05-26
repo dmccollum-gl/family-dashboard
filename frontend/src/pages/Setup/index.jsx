@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   Box, Button, Card, CardActionArea, CardContent,
   CircularProgress, Container, Divider, IconButton,
-  InputAdornment, LinearProgress, Stack, Step, StepLabel,
+  InputAdornment, LinearProgress, Link, Stack, Step, StepLabel,
   Stepper, TextField, Typography,
 } from "@mui/material";
 import CheckCircleIcon    from "@mui/icons-material/CheckCircle";
@@ -13,10 +13,11 @@ import VisibilityOff      from "@mui/icons-material/VisibilityOff";
 import WifiIcon           from "@mui/icons-material/Wifi";
 import WifiOffIcon        from "@mui/icons-material/WifiOff";
 import RouterIcon         from "@mui/icons-material/Router";
+import VpnKeyIcon         from "@mui/icons-material/VpnKey";
+import PublicIcon         from "@mui/icons-material/Public";
 
 const STEPS = ["WiFi Network", "Device Info", "Applying"];
 
-// Map signal strength (0-100) to 1-4 bars label
 function signalLabel(s) {
   if (s > 70) return "Excellent";
   if (s > 50) return "Good";
@@ -64,10 +65,8 @@ function WifiStep({ value, onChange, onNext }) {
     }
   }, []);
 
-  // Initial scan
   useEffect(() => { scan(); }, [scan]);
 
-  // Auto-rescan every 20 s until the user picks a network
   useEffect(() => {
     if (value.ssid || manual) return;
     const id = setInterval(scan, 20000);
@@ -81,7 +80,6 @@ function WifiStep({ value, onChange, onNext }) {
     <Stack spacing={3}>
       <Typography variant="h6">Choose your WiFi network</Typography>
 
-      {/* Scan list */}
       {!manual && (
         <Box>
           <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
@@ -143,7 +141,6 @@ function WifiStep({ value, onChange, onNext }) {
         </Box>
       )}
 
-      {/* Manual SSID entry */}
       {manual && (
         <TextField
           label="Network name (SSID)"
@@ -162,7 +159,6 @@ function WifiStep({ value, onChange, onNext }) {
         </Button>
       )}
 
-      {/* Password field — shown once a network is selected */}
       {value.ssid && (
         <TextField
           label={`Password for "${value.ssid}"`}
@@ -198,18 +194,18 @@ function WifiStep({ value, onChange, onNext }) {
 // ─── Step 1: Device info ─────────────────────────────────────────────────────
 
 function DeviceStep({ value, onChange, onNext, onBack, submitting }) {
-  const canAdvance = value.device_name.trim() && value.city.trim();
+  const canAdvance = value.device_name.trim() && value.city.trim() && value.activation_code.trim();
   return (
     <Stack spacing={3}>
       <Typography variant="h6">Name this device</Typography>
       <TextField
         label="Device name"
-        placeholder="e.g. Living Room, Reception, Lobby"
+        placeholder="e.g. SmithFamily, Reception, Lobby"
         value={value.device_name}
         onChange={e => onChange({ ...value, device_name: e.target.value })}
         fullWidth
         autoFocus
-        helperText="Used as the hostname and in the dashboard header"
+        helperText="Used as the hostname — letters, numbers, and hyphens only"
       />
       <TextField
         label="City or ZIP code"
@@ -218,6 +214,17 @@ function DeviceStep({ value, onChange, onNext, onBack, submitting }) {
         onChange={e => onChange({ ...value, city: e.target.value })}
         fullWidth
         helperText="Used for the weather display"
+      />
+      <TextField
+        label="Activation code"
+        placeholder="XXXX-XXXX-XXXX-XXXX"
+        value={value.activation_code}
+        onChange={e => onChange({ ...value, activation_code: e.target.value.toUpperCase() })}
+        fullWidth
+        helperText="Single-use code included with your device — required to register your tunnel"
+        InputProps={{
+          startAdornment: <InputAdornment position="start"><VpnKeyIcon /></InputAdornment>,
+        }}
       />
       <Stack direction="row" spacing={2}>
         {onBack && <Button variant="outlined" onClick={onBack} disabled={submitting} fullWidth>Back</Button>}
@@ -231,17 +238,31 @@ function DeviceStep({ value, onChange, onNext, onBack, submitting }) {
 
 // ─── Step 2: Applying / Result ───────────────────────────────────────────────
 
-function ApplyingStep({ success, error, ssid, deviceName, alreadyConnected }) {
-  const hostname = (deviceName || "dashboard")
-    .toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-  const dashboardUrl = `http://${hostname}.local`;
+function ApplyingStep({ success, error, errorType, fqdn, ssid, deviceName, alreadyConnected, onRetry }) {
   if (error) {
+    let title = "Setup failed";
+    let hint  = null;
+
+    if (errorType === "invalid_activation_code") {
+      title = "Invalid activation code";
+      hint  = "Double-check the code and make sure it hasn't already been used.";
+    } else if (errorType === "hostname_taken") {
+      title = "Device name already taken";
+      hint  = "Choose a different device name on the previous screen.";
+    } else if (errorType === "api_error") {
+      title = "Provisioning error";
+      hint  = "A server-side error occurred. Please try again in a moment.";
+    }
+
     return (
       <Stack spacing={2} alignItems="center" sx={{ textAlign: "center" }}>
         <ErrorIcon color="error" sx={{ fontSize: 56 }} />
-        <Typography variant="h6" color="error">Setup failed</Typography>
+        <Typography variant="h6" color="error">{title}</Typography>
         <Typography variant="body2" color="text.secondary">{error}</Typography>
-        <Button variant="outlined" onClick={() => window.location.reload()}>
+        {hint && (
+          <Typography variant="caption" color="text.secondary">{hint}</Typography>
+        )}
+        <Button variant="outlined" onClick={onRetry}>
           Try again
         </Button>
       </Stack>
@@ -249,48 +270,87 @@ function ApplyingStep({ success, error, ssid, deviceName, alreadyConnected }) {
   }
 
   if (success) {
+    const tunnelUrl = fqdn ? `https://${fqdn}` : null;
     return (
       <Stack spacing={3} alignItems="center" sx={{ textAlign: "center" }}>
         <CheckCircleIcon color="success" sx={{ fontSize: 56 }} />
         <Typography variant="h6">{alreadyConnected ? "Setup complete!" : "Connected!"}</Typography>
+
         {!alreadyConnected && (
           <Typography variant="body2" color="text.secondary">
             The Pi is connecting to <strong>{ssid}</strong> and rebooting.
           </Typography>
         )}
-        <Divider sx={{ width: "100%" }} />
-        {!alreadyConnected && (
-          <Typography variant="body2" color="text.secondary">
-            Reconnect your device to your home WiFi, then visit:
-          </Typography>
-        )}
         {alreadyConnected && (
           <Typography variant="body2" color="text.secondary">
-            Settings saved. The Pi is rebooting — it will be available shortly at:
+            Settings saved. The Pi is rebooting — it will be available shortly.
           </Typography>
         )}
-        <Typography
-          variant="h6"
-          sx={{ fontFamily: "monospace", bgcolor: "action.hover", px: 2, py: 1, borderRadius: 1 }}
-        >
-          {dashboardUrl}
-        </Typography>
-        <Typography variant="caption" color="text.secondary">
-          It may take a minute after reboot before the dashboard is available.
-        </Typography>
+
+        {tunnelUrl && (
+          <>
+            <Divider sx={{ width: "100%" }} />
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <PublicIcon color="primary" />
+              <Typography variant="body2" fontWeight={600}>
+                Your dashboard will be available at:
+              </Typography>
+            </Box>
+            <Link
+              href={tunnelUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              underline="hover"
+            >
+              <Typography
+                variant="h6"
+                sx={{ fontFamily: "monospace", bgcolor: "action.hover", px: 2, py: 1, borderRadius: 1 }}
+              >
+                {fqdn}
+              </Typography>
+            </Link>
+            <Typography variant="caption" color="text.secondary">
+              The tunnel may take 1–2 minutes to come online after the Pi connects to WiFi.
+            </Typography>
+          </>
+        )}
+
+        {!tunnelUrl && (
+          <>
+            <Divider sx={{ width: "100%" }} />
+            {!alreadyConnected && (
+              <Typography variant="body2" color="text.secondary">
+                Reconnect your device to your home WiFi, then visit:
+              </Typography>
+            )}
+            <Typography
+              variant="h6"
+              sx={{ fontFamily: "monospace", bgcolor: "action.hover", px: 2, py: 1, borderRadius: 1 }}
+            >
+              {`http://${(deviceName || "dashboard").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")}.local`}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              It may take a minute after reboot before the dashboard is available.
+            </Typography>
+          </>
+        )}
       </Stack>
     );
   }
 
+  // In-progress
   return (
     <Stack spacing={2} alignItems="center" sx={{ textAlign: "center" }}>
       <CircularProgress size={48} />
-      <Typography variant="h6">Applying settings…</Typography>
+      <Typography variant="h6">Registering your device…</Typography>
       <Typography variant="body2" color="text.secondary">
-        {alreadyConnected
-          ? "Saving configuration and rebooting…"
-          : <>Saving configuration and connecting to <strong>{ssid}</strong></>}
+        Creating your tunnel and registering your FQDN — this takes a few seconds.
       </Typography>
+      {!alreadyConnected && (
+        <Typography variant="caption" color="text.secondary">
+          Will then connect to <strong>{ssid}</strong> and reboot.
+        </Typography>
+      )}
     </Stack>
   );
 }
@@ -298,17 +358,18 @@ function ApplyingStep({ success, error, ssid, deviceName, alreadyConnected }) {
 // ─── Main wizard ─────────────────────────────────────────────────────────────
 
 export default function Setup() {
-  const [step, setStep]             = useState(null); // null = loading status
+  const [step, setStep]             = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult]         = useState(null); // null | {success, error}
-  const [netStatus, setNetStatus]   = useState(null); // {connected, connection_type, ssid}
+  const [result, setResult]         = useState(null); // {success, error?, errorType?, fqdn?}
+  const [netStatus, setNetStatus]   = useState(null);
   const [rebooting, setRebooting]   = useState(false);
 
   const [form, setForm] = useState({
-    ssid:        "",
-    password:    "",
-    device_name: "",
-    city:        "",
+    ssid:            "",
+    password:        "",
+    device_name:     "",
+    city:            "",
+    activation_code: "",
   });
 
   useEffect(() => {
@@ -329,20 +390,33 @@ export default function Setup() {
 
   const handleSubmit = async () => {
     setSubmitting(true);
+    setResult(null);
     setStep(2);
     try {
       const res = await fetch("/api/setup/configure", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ ...form, activation_code: "", already_connected: alreadyConnected }),
+        body:    JSON.stringify({ ...form, already_connected: alreadyConnected }),
       });
       const data = await res.json();
-      setResult(data.success ? { success: true } : { error: data.error || "Unknown error" });
+      if (data.success) {
+        setResult({ success: true, fqdn: data.fqdn || null });
+      } else {
+        setResult({
+          error:     data.error || "Unknown error",
+          errorType: data.error_type || null,
+        });
+      }
     } catch (e) {
       setResult({ error: e.message });
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleRetry = () => {
+    setResult(null);
+    setStep(1);
   };
 
   const handleReboot = async () => {
@@ -363,7 +437,7 @@ export default function Setup() {
     );
   }
 
-  const connectionBanner = alreadyConnected && step < 3 ? (
+  const connectionBanner = alreadyConnected && step < 2 ? (
     <Box
       sx={{
         display:      "flex",
@@ -398,7 +472,6 @@ export default function Setup() {
       }}
     >
       <Container maxWidth="sm">
-        {/* Header */}
         <Stack spacing={1} alignItems="center" sx={{ mb: 4 }}>
           <RouterIcon sx={{ fontSize: 40, color: "primary.main" }} />
           <Typography variant="h5" fontWeight={600}>Dashboard Setup</Typography>
@@ -407,7 +480,6 @@ export default function Setup() {
           </Typography>
         </Stack>
 
-        {/* Persistent reboot button */}
         {step !== 2 && (
           <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
             <Button
@@ -422,7 +494,6 @@ export default function Setup() {
           </Box>
         )}
 
-        {/* Stepper */}
         <Stepper activeStep={step} alternativeLabel sx={{ mb: 4 }}>
           {STEPS.map(label => (
             <Step key={label}>
@@ -431,10 +502,8 @@ export default function Setup() {
           ))}
         </Stepper>
 
-        {/* Already-connected notice */}
         {connectionBanner}
 
-        {/* Step content */}
         <Card variant="outlined" sx={{ p: 3 }}>
           {step === 0 && (
             <WifiStep
@@ -456,9 +525,12 @@ export default function Setup() {
             <ApplyingStep
               success={result?.success}
               error={result?.error}
+              errorType={result?.errorType}
+              fqdn={result?.fqdn}
               ssid={form.ssid}
               deviceName={form.device_name}
               alreadyConnected={alreadyConnected}
+              onRetry={handleRetry}
             />
           )}
         </Card>

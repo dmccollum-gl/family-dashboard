@@ -1,0 +1,109 @@
+#cloud-config
+autoinstall:
+  version: 1
+
+  # Locale / keyboard
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+    variant: ""
+
+  # Use the minimal server install (no snaps, no GUI)
+  source:
+    id: ubuntu-server-minimal
+    search_drivers: false
+
+  # Use the entire disk with LVM — installer will pick the first available disk.
+  # WARNING: this wipes the target disk completely.
+  storage:
+    layout:
+      name: lvm
+      sizing-policy: all   # use all remaining space for /
+      reset-partition: true
+
+  # Default user: 'provision' — password will be changed on first boot.
+  # Pre-hashed password is 'dashboard' — CHANGE THIS via the first-boot wizard.
+  identity:
+    hostname: provisioning-server
+    realname: Dashboard Provisioning
+    username: provision
+    # 'dashboard' — hashed with SHA-512. Change on first boot.
+    password: "$6$rounds=4096$dK1aT7Bv3.VXcTyQ$pXos0mxg7P24mAIXJitewwt1X1V22ylFQKPMMW1VWgEY3YIItmtp5bz8pS1iDdgLYEURXtADXaelgHl3MnHCJ/"
+
+  # Enable SSH from first boot
+  ssh:
+    install-server: true
+    allow-pw: true
+    authorized-keys: []
+
+  # Packages installed during OS setup (before late-commands)
+  packages:
+    - curl
+    - wget
+    - git
+    - jq
+    - python3
+    - python3-pip
+    - python3-venv
+    - python3-dev
+    - gcc
+    - libffi-dev
+    - libssl-dev
+    - build-essential
+    - sqlite3
+    - nginx
+    - ufw
+
+  # Run after OS is installed but before first reboot
+  late-commands:
+    # -- cloudflared -----------------------------------------------------------
+    - |
+      curtin in-target -- bash -c '
+        ARCH=$(dpkg --print-architecture)
+        URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}.deb"
+        curl -fsSL -o /tmp/cloudflared.deb "$URL" && dpkg -i /tmp/cloudflared.deb && rm /tmp/cloudflared.deb
+        echo "[install] cloudflared installed: $(cloudflared --version 2>&1 | head -1)"
+      '
+
+    # -- Extract provisioning server source ------------------------------------
+    - mkdir -p /target/opt/provisioning
+    - tar -xzf /cdrom/autoinstall/provisioning-server.tar.gz -C /target/opt/provisioning --strip-components=1
+    - chown -R 1000:1000 /target/opt/provisioning
+
+    # -- Python virtual environment + dependencies -----------------------------
+    - |
+      curtin in-target -- bash -c '
+        python3 -m venv /opt/provisioning/.venv
+        /opt/provisioning/.venv/bin/pip install --quiet --upgrade pip
+        /opt/provisioning/.venv/bin/pip install --quiet -r /opt/provisioning/requirements.txt
+        echo "[install] Python venv ready."
+      '
+
+    # -- Copy post-install scripts ---------------------------------------------
+    - cp /cdrom/autoinstall/install-server.sh       /target/usr/local/bin/provisioning-install
+    - cp /cdrom/autoinstall/setup-server.py         /target/usr/local/bin/provisioning-setup-server
+    - chmod +x /target/usr/local/bin/provisioning-install
+    - chmod +x /target/usr/local/bin/provisioning-setup-server
+
+    # -- Run install-server.sh inside the target OS ---------------------------
+    # This creates and enables all systemd services including the HTTP setup wizard
+    - curtin in-target -- bash /usr/local/bin/provisioning-install
+
+    # -- Copy setup-server.py into the app directory --------------------------
+    - mkdir -p /target/opt/provisioning/mac-mini
+    - cp /cdrom/autoinstall/setup-server.py /target/opt/provisioning/mac-mini/setup-server.py
+
+    # -- Basic firewall: allow SSH + HTTPS (port 443 handled by cloudflared) --
+    - |
+      curtin in-target -- bash -c '
+        ufw --force reset
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw allow ssh
+        ufw allow 80/tcp
+        ufw allow 8080/tcp
+        ufw --force enable
+      '
+
+  # Reboot automatically when installation finishes
+  shutdown: reboot

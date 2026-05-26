@@ -3,9 +3,12 @@ import json
 import os
 import subprocess
 import threading
+import uuid
 
+import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel
+from config import settings
 from database import SessionLocal, UserPrefs
 from routers.calendar import _events_cache
 
@@ -184,6 +187,74 @@ class SetupRequest(BaseModel):
     already_connected: bool = False   # skip WiFi reconfiguration
 
 
+def _hostname_slug(device_name: str) -> str:
+    """Convert device name to a valid hostname slug (matches pi-setup-apply.sh logic)."""
+    import re
+    slug = device_name.lower().replace(" ", "-")
+    slug = re.sub(r"[^a-z0-9-]", "", slug)
+    slug = slug.strip("-")
+    return slug or "dashboard"
+
+
+def _provision_tunnel(config_path: str, device_name: str, activation_code: str) -> dict:
+    """Call the provisioning server to create a tunnel.
+
+    Returns a dict with keys: success, fqdn (on success), or error (on failure).
+    Only called when PROVISIONING_SERVER_URL is configured.
+    """
+    prov_url = settings.provisioning_server_url
+    if not prov_url:
+        return {"success": True, "fqdn": None}
+
+    # Stable device_id persisted in config so it survives re-setup.
+    config: dict = {}
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            config = json.load(f)
+    if not config.get("device_id"):
+        config["device_id"] = str(uuid.uuid4())
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+    hostname = _hostname_slug(device_name)
+
+    try:
+        resp = httpx.post(
+            f"{prov_url}/api/provision/tunnel",
+            json={
+                "hostname":        hostname,
+                "pi_device_id":    config["device_id"],
+                "activation_code": activation_code,
+            },
+            timeout=45,
+        )
+    except httpx.ConnectError:
+        return {"success": False, "error": "Cannot reach provisioning server. Check your internet connection and try again."}
+    except httpx.TimeoutException:
+        return {"success": False, "error": "Provisioning server timed out. Please try again."}
+    except Exception as exc:
+        return {"success": False, "error": f"Provisioning request failed: {exc}"}
+
+    if resp.status_code == 400:
+        detail = resp.json().get("detail", "Invalid request")
+        if "activation code" in detail.lower():
+            return {"success": False, "error": "Invalid or already-used activation code. Please check and try again.", "error_type": "invalid_activation_code"}
+        return {"success": False, "error": detail, "error_type": "bad_request"}
+    if resp.status_code == 409:
+        return {"success": False, "error": f"Hostname '{hostname}' is already taken. Choose a different device name.", "error_type": "hostname_taken"}
+    if resp.status_code != 200:
+        detail = resp.json().get("detail", "Unknown provisioning error")
+        return {"success": False, "error": f"Provisioning error: {detail}", "error_type": "api_error"}
+
+    data = resp.json()
+    return {
+        "success":      True,
+        "fqdn":         data["fqdn"],
+        "tunnel_token": data["tunnel_token"],
+        "tunnel_id":    data["tunnel_id"],
+    }
+
+
 @router.post("/configure")
 def configure(req: SetupRequest):
     if not _on_pi():
@@ -206,29 +277,44 @@ def configure(req: SetupRequest):
         return {"success": True}
 
     try:
-        # Write dashboard config
+        # Write device name and city before provisioning so device_id can be
+        # read/written to the correct config path.
         config: dict = {}
         if os.path.exists(CONFIG_PATH):
             with open(CONFIG_PATH) as f:
                 config = json.load(f)
-        config["device_name"]     = req.device_name
-        config["owm_location"]    = req.city
-        config["activation_code"] = req.activation_code
+        config["device_name"]  = req.device_name
+        config["owm_location"] = req.city
+        if not config.get("device_id"):
+            config["device_id"] = str(uuid.uuid4())
         with open(CONFIG_PATH, "w") as f:
             json.dump(config, f, indent=2)
+
+        # Provision tunnel (calls remote server; may return early with an error).
+        if req.activation_code and settings.provisioning_server_url:
+            prov = _provision_tunnel(CONFIG_PATH, req.device_name, req.activation_code)
+            if not prov["success"]:
+                return prov  # structured error: {success, error, error_type}
+
+            # Write tunnel credentials to config before running the apply script.
+            with open(CONFIG_PATH) as f:
+                config = json.load(f)
+            config["fqdn"]         = prov.get("fqdn")
+            config["tunnel_token"] = prov.get("tunnel_token")
+            config["tunnel_id"]    = prov.get("tunnel_id")
+            config["provisioned"]  = True
+            with open(CONFIG_PATH, "w") as f:
+                json.dump(config, f, indent=2)
 
         # Clear calendar users and RSS feeds — fresh install starts clean.
         _reset_user_data()
 
-        # Mark device as configured
+        # Mark device as configured.
         open(CONFIGURED_FLAG, "w").close()
 
         # Background thread so the HTTP response reaches the client first.
-        # sudo -n: non-interactive (no TTY required) — works from subprocess context.
-        ssid_arg     = "" if req.already_connected else req.ssid
-        # Append newline so bash `read` returns 0; without it, read returns non-zero
-        # at EOF and the `|| PASSWORD=""` fallback overwrites the correct password.
-        password_in  = b"" if req.already_connected else (req.password.encode() + b"\n")
+        ssid_arg    = "" if req.already_connected else req.ssid
+        password_in = b"" if req.already_connected else (req.password.encode() + b"\n")
 
         def _apply(ssid=ssid_arg, pw=password_in):
             import time, logging
@@ -248,7 +334,13 @@ def configure(req: SetupRequest):
 
         threading.Thread(target=_apply, daemon=True).start()
 
-        return {"success": True}
+        # Return the FQDN so the setup wizard can display it.
+        response: dict = {"success": True}
+        with open(CONFIG_PATH) as f:
+            saved = json.load(f)
+        if saved.get("fqdn"):
+            response["fqdn"] = saved["fqdn"]
+        return response
 
     except Exception as exc:
         return {"success": False, "error": str(exc)}

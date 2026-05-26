@@ -1,0 +1,24 @@
+services:
+  provisioning:
+    build: .
+    image: dashboard-provisioning
+    container_name: provisioning-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"   # only bind to localhost — cloudflared handles external TLS
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./server.db:/app/server.db
+    environment:
+      - DATABASE_URL=sqlite:///./server.db
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

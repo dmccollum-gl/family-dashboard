@@ -7,11 +7,18 @@ A Raspberry Pi kiosk for a family: full-screen Pygame display showing a shared G
 - Raspberry Pi Zero 2W — ARM Cortex-A53, 512 MB RAM, Pi OS Bookworm arm64
 - HDMI display, no keyboard/mouse attached — display is view-only
 
-## Pi deployment
-- IP: `10.115.115.61` (static DHCP lease — permanent)
+## Pi devices
+
+### TEST — Pi Zero 2W @ `10.115.115.243` ← deploy here by default
 - User/pass: `dashboard` / `dashboard`
-- SSH helper: `sshpass -p dashboard ssh -o StrictHostKeyChecking=no dashboard@10.115.115.61`
-- SCP helper: `sshpass -p dashboard scp -o StrictHostKeyChecking=no <file> dashboard@10.115.115.61:<dest>`
+- SSH: `sshpass -p dashboard ssh -o StrictHostKeyChecking=no dashboard@10.115.115.243`
+- SCP: `sshpass -p dashboard scp -o StrictHostKeyChecking=no <file> dashboard@10.115.115.243:<dest>`
+
+### PRODUCTION — Pi 3 @ `10.115.115.61` ← DO NOT TOUCH
+- Actively in use as a live family calendar display
+- Only deploy to this machine when explicitly instructed to push a production release
+- Same credentials and paths as test Pi
+
 - MOTD always prints to stderr — harmless noise, check actual exit codes or `echo ok`
 
 ## Paths on Pi

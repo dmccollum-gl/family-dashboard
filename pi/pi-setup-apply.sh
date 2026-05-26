@@ -201,6 +201,28 @@ else
   echo "[setup-apply] No SSID -- skipping WiFi."
 fi
 
+# -- Start cloudflared if the device has been provisioned ---------------------
+CFG=/opt/dashboard/backend/dashboard_config.json
+if python3 -c "
+import json, sys
+try:
+    d = json.load(open('$CFG'))
+    sys.exit(0 if d.get('provisioned') and d.get('tunnel_token') else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+  echo "[setup-apply] Provisioned — starting cloudflared tunnel..."
+  systemctl start cloudflared.service 2>/dev/null || true
+  sleep 3
+  {
+    echo "=== cloudflared status at $(date) ==="
+    systemctl status cloudflared.service --no-pager 2>&1
+  } >> /var/log/dashboard-cloudflared.log 2>/dev/null || true
+  echo "[setup-apply] cloudflared status logged to /var/log/dashboard-cloudflared.log"
+else
+  echo "[setup-apply] Device not provisioned — skipping cloudflared start."
+fi
+
 echo "[setup-apply] Rebooting in 5s..."
 sleep 5
 systemctl reboot

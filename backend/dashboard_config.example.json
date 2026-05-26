@@ -7,5 +7,9 @@
   ],
   "owm_api_key": "your_openweathermap_api_key_here",
   "owm_location": "your_city_name_or_zip",
-  "owm_units": "imperial"
+  "owm_units": "imperial",
+  "fqdn": null,
+  "tunnel_token": null,
+  "tunnel_id": null,
+  "provisioned": false
 }

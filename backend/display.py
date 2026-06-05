@@ -99,7 +99,7 @@ WEATHER_INTERVAL  = 1800   # 30 min — matches OWM update cadence
 CALENDAR_INTERVAL = 600    # 10 min — backend has 90-second server-side cache
 RSS_INTERVAL      = 60     # 1 min  — ticker cycles; content may update frequently
 SETTINGS_INTERVAL = 30     # 30 sec — pick up admin-configured theme/view changes
-SYSINFO_INTERVAL  = 30     # 30 sec — CPU / RAM stats (fast /proc reads)
+SYSINFO_INTERVAL  = 0.5    # 500 ms — CPU / RAM stats (fast /proc reads)
 
 # ── colour palettes ──────────────────────────────────────────────────────────
 LIGHT = dict(
@@ -216,6 +216,7 @@ _state: dict = {
     "hourly":        [],
     "rss":           [],
     "events":        [],
+    "expired_users": [],   # names of users whose Google tokens couldn't be refreshed
     "settings":      {"theme": "auto", "view": "week", "weather_view": "daily"},
     "sysinfo":       {"cpu": "--", "ram": "--"},
     # timestamps (monotonic) — used as cache-invalidation tokens
@@ -255,14 +256,16 @@ def _fetch_weather() -> None:
 
 
 def _fetch_calendar() -> None:
-    patch: dict = {}
+    patch: dict = {"calendar_ts": time.monotonic(), "calendar_busy": False}
     try:
         raw = _get_json(f"{API_BASE}/calendar/events")
-        patch["events"] = raw if isinstance(raw, list) else raw.get("events", [])
+        if isinstance(raw, list):
+            patch["events"] = raw
+        else:
+            patch["events"]        = raw.get("events", [])
+            patch["expired_users"] = raw.get("expired_users", [])
     except Exception:
-        patch["events"] = []
-    patch["calendar_ts"]   = time.monotonic()
-    patch["calendar_busy"] = False
+        pass  # keep existing _state["events"] / expired_users — prevents blank calendar on network loss
     with _lock:
         _state.update(patch)
 
@@ -658,7 +661,7 @@ class _Ticker:
         return items[self.idx % len(items)]
 
     def draw(self, surf: pygame.Surface, rect: pygame.Rect,
-             items: list, size: int, color: tuple) -> None:
+             items: list, C: dict) -> None:
         item = self.current(items)
         if not item:
             return
@@ -666,50 +669,63 @@ class _Ticker:
         source = item.get("source", "")
         title  = item.get("title", "")
 
-        # Source label — fixed on far left, bold, slightly subdued
-        src_fnt  = _font(size - 2, bold=True)
-        src_surf = src_fnt.render(source, True, color) if source else None
-        SOURCE_W = (src_surf.get_width() + 16) if src_surf else 0
-
-        # Headline word-wraps to at most 2 lines in the remaining width
-        fnt    = _font(size)
-        text_x = rect.x + SOURCE_W + (8 if SOURCE_W else 4)
-        text_w = rect.right - text_x - 8
-
-        words  = title.split()
-        lines: list[str] = []
-        cur    = ""
-        for word in words:
-            test = (cur + " " + word).strip()
-            if fnt.size(test)[0] <= text_w:
-                cur = test
-            else:
-                if cur:
-                    lines.append(cur)
-                cur = word
-            if len(lines) >= 2:
-                cur = ""
-                break
-        if cur and len(lines) < 2:
-            lines.append(cur)
-        lines = lines[:2]
-        if not lines:
-            lines = [_trunc(title, fnt, text_w)]
-        elif len(lines) == 2:
-            lines[1] = _trunc(lines[1], fnt, text_w)
-        else:
-            lines[0] = _trunc(lines[0], fnt, text_w)
-
-        line_h  = fnt.get_linesize()
-        total_h = len(lines) * line_h
-        y0      = rect.centery - total_h // 2
-
         old_clip = surf.get_clip()
         surf.set_clip(rect)
-        if src_surf:
-            surf.blit(src_surf, src_surf.get_rect(midleft=(rect.x + 6, rect.centery)))
-        for i, line in enumerate(lines):
-            surf.blit(fnt.render(line, True, color), (text_x, y0 + i * line_h))
+
+        # ── Source bubble — pill tag on far left ──────────────────────
+        bubble_right = rect.x
+        if source:
+            src_fnt  = _font(11, bold=True)
+            src_surf = src_fnt.render(source, True, C["surface"])
+            bpad_x   = _s(7)
+            bpad_y   = _s(4)
+            bw       = src_surf.get_width()  + bpad_x * 2
+            bh       = src_surf.get_height() + bpad_y * 2
+            bx       = rect.x + _s(6)
+            by       = rect.centery - bh // 2
+            pygame.draw.rect(surf, C["accent"],
+                             (bx, by, bw, bh), border_radius=_s(5))
+            surf.blit(src_surf, src_surf.get_rect(
+                center=(bx + bw // 2, by + bh // 2)))
+            bubble_right = bx + bw
+
+        # ── Headline — largest font size that fits the full text ──────
+        text_x = bubble_right + _s(10)
+        text_w = rect.right - text_x - _s(8)
+
+        best_size:  int       = 14
+        best_lines: list[str] = [title]
+        for try_size in range(38, 13, -1):
+            fnt = _font(try_size)
+            if fnt.size(title)[0] <= text_w:
+                best_size  = try_size
+                best_lines = [title]
+                break
+            words  = title.split()
+            lines: list[str] = []
+            cur    = ""
+            for word in words:
+                test = (cur + " " + word).strip()
+                if fnt.size(test)[0] <= text_w:
+                    cur = test
+                else:
+                    if cur:
+                        lines.append(cur)
+                    cur = word
+            if cur:
+                lines.append(cur)
+            if len(lines) <= 2 and all(fnt.size(l)[0] <= text_w for l in lines):
+                best_size  = try_size
+                best_lines = lines
+                break
+
+        fnt     = _font(best_size)
+        line_h  = fnt.get_linesize()
+        total_h = len(best_lines) * line_h
+        y0      = rect.centery - total_h // 2
+        for i, line in enumerate(best_lines):
+            surf.blit(fnt.render(line, True, C["text"]), (text_x, y0 + i * line_h))
+
         surf.set_clip(old_clip)
 
 
@@ -827,7 +843,7 @@ def _draw_topbar(surf: pygame.Surface, C: dict, W: int,
     gap_x2 = wx_left - _s(8)
     if gap_x2 - gap_x1 > _s(60):
         trect = pygame.Rect(gap_x1, 0, gap_x2 - gap_x1, TOPBAR_H)
-        ticker.draw(surf, trect, rss, 30, C["text"])
+        ticker.draw(surf, trect, rss, C)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1103,13 +1119,14 @@ def _draw_cardgrid(surf: pygame.Surface, C: dict, events_raw: list,
 # ════════════════════════════════════════════════════════════════════════════
 # FOOTER  (baked into grid_surf; y coords relative to grid_surf top)
 # ════════════════════════════════════════════════════════════════════════════
-def _draw_footer(surf: pygame.Surface, C: dict, W: int, surf_H: int,
+def _draw_footer(surf: pygame.Surface, C: dict, W: int,
                  label: str, ip: str, host: str, sysinfo: dict) -> None:
-    fy = surf_H - FOOTER_H
-    pygame.draw.rect(surf, C["footer"], (0, fy, W, FOOTER_H))
-    pygame.draw.line(surf, C["border"], (0, fy), (W, fy))
-    my = fy + FOOTER_H // 2
-    _blit(surf, f"{ip}  {host}", 12, C["subtext"], _s(8), my, anchor="midleft")
+    """Renders into a dedicated FOOTER_H-tall surface so CPU/RAM updates
+    don't require a full calendar grid redraw."""
+    surf.fill(C["footer"])
+    pygame.draw.line(surf, C["border"], (0, 0), (W, 0))
+    my = FOOTER_H // 2
+    _blit(surf, f"{host} ({ip})", 12, C["subtext"], _s(8), my, anchor="midleft")
     _blit(surf, label, 13, C["subtext"], W // 2, my, anchor="center")
     cpu = sysinfo.get("cpu", "--")
     ram = sysinfo.get("ram", "--")
@@ -1180,10 +1197,22 @@ def main() -> None:
     if args.fullscreen:
         flags = pygame.FULLSCREEN | pygame.NOFRAME
         try:
-            screen = pygame.display.set_mode((0, 0), flags)
-            W, H = screen.get_size()
-            if W == 0 or H == 0:
-                raise RuntimeError(f"display returned zero size {W}x{H}")
+            # Query native resolution before creating window — more reliable
+            # than (0,0) with kmsdrm, which doesn't always honour the hint.
+            info = pygame.display.Info()
+            W, H = info.current_w, info.current_h
+            if W <= 0 or H <= 0:
+                # Info() failed (common on some kmsdrm setups before a window
+                # exists); fall back to listing modes and picking the largest.
+                modes = pygame.display.list_modes(flags=flags)
+                if modes and modes != -1:
+                    W, H = modes[0]
+                else:
+                    raise RuntimeError("Cannot determine display resolution")
+            screen = pygame.display.set_mode((W, H), flags)
+            actual_w, actual_h = screen.get_size()
+            if actual_w > 0 and actual_h > 0:
+                W, H = actual_w, actual_h  # use what SDL actually gave us
         except Exception as e:
             print(f"DISPLAY INIT FAILED: {e}", file=sys.stderr)
             print(f"SDL_VIDEODRIVER={os.environ.get('SDL_VIDEODRIVER','(not set)')}", file=sys.stderr)
@@ -1213,7 +1242,7 @@ def main() -> None:
             for ev in pygame.event.get():
                 if ev.type == pygame.QUIT:
                     pygame.quit(); return
-                elif ev.type == pygame.KEYDOWN and ev.key in (pygame.K_q, pygame.K_ESCAPE):
+                elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_x and (ev.mod & pygame.KMOD_CTRL):
                     pygame.quit(); return
             now = time.time()
             if now - last_check >= 5:
@@ -1260,8 +1289,9 @@ def main() -> None:
     cur_allday_h = _s(26)  # kept in sync with _draw_timegrid return value
 
     # ── Cached surfaces (None = dirty, must be re-rendered) ───────────────────
-    topbar_surf: Optional[pygame.Surface] = None
-    grid_surf:   Optional[pygame.Surface] = None
+    topbar_surf:  Optional[pygame.Surface] = None
+    grid_surf:    Optional[pygame.Surface] = None
+    footer_surf:  Optional[pygame.Surface] = None
 
     # Previous render state — used to detect what changed
     prev: dict = {
@@ -1277,12 +1307,13 @@ def main() -> None:
         "settings_ts":  -1.0,
         "sysinfo_ts":   -1.0,
         "weather_view": None,
+        "expired":      [],     # list of expired user names
     }
 
     # Grid area geometry (constant after init)
     GRID_Y  = 0                           # y within grid_surf
     GRID_H  = H - TOPBAR_H - FOOTER_H    # calendar usable height
-    SURF_H  = H - TOPBAR_H               # total height of grid_surf
+    SURF_H  = GRID_H                      # grid_surf covers only the calendar area; footer is separate
 
     running = True
     while running:
@@ -1292,43 +1323,27 @@ def main() -> None:
                 running = False
             elif ev.type == pygame.KEYDOWN:
                 k = ev.key
-                if k in (pygame.K_q, pygame.K_ESCAPE):
+                if k == pygame.K_x and (ev.mod & pygame.KMOD_CTRL):
                     running = False
-                elif k == pygame.K_LEFT:
-                    anchor = _advance(view, anchor, -1)
-                elif k == pygame.K_RIGHT:
-                    anchor = _advance(view, anchor, +1)
-                elif k == pygame.K_t:
-                    anchor = date.today()
-                elif k == pygame.K_d:
-                    view = "day";   anchor = date.today(); kb_view_override = True
-                elif k == pygame.K_w:
-                    view = "week";  anchor = date.today(); kb_view_override = True
-                elif k == pygame.K_2:
-                    view = "2week"; anchor = date.today(); kb_view_override = True
-                elif k == pygame.K_m:
-                    view = "month"; anchor = date.today(); kb_view_override = True
-                elif k == pygame.K_BACKQUOTE:
-                    theme_mode = {"auto": "light", "light": "dark", "dark": "auto"}[theme_mode]
-                    kb_theme_override = True
 
         # ── Trigger stale fetches ─────────────────────────────────────────────
         _schedule_fetches()
 
         # ── Snapshot shared state ─────────────────────────────────────────────
         with _lock:
-            snap_weather     = _state["weather"]
-            snap_forecast    = list(_state["forecast"])
-            snap_hourly      = list(_state["hourly"])
-            snap_rss         = list(_state["rss"])
-            snap_events      = list(_state["events"])
-            snap_weather_ts  = _state["weather_ts"]
-            snap_cal_ts      = _state["calendar_ts"]
-            snap_rss_ts      = _state["rss_ts"]
-            snap_settings    = dict(_state["settings"])
-            snap_settings_ts = _state["settings_ts"]
-            snap_sysinfo     = dict(_state["sysinfo"])
-            snap_sysinfo_ts  = _state["sysinfo_ts"]
+            snap_weather      = _state["weather"]
+            snap_forecast     = list(_state["forecast"])
+            snap_hourly       = list(_state["hourly"])
+            snap_rss          = list(_state["rss"])
+            snap_events       = list(_state["events"])
+            snap_expired      = list(_state["expired_users"])
+            snap_weather_ts   = _state["weather_ts"]
+            snap_cal_ts       = _state["calendar_ts"]
+            snap_rss_ts       = _state["rss_ts"]
+            snap_settings     = dict(_state["settings"])
+            snap_settings_ts  = _state["settings_ts"]
+            snap_sysinfo      = dict(_state["sysinfo"])
+            snap_sysinfo_ts   = _state["sysinfo_ts"]
 
         # ── Apply admin-configured display settings (unless keyboard overrode) ─
         if not kb_theme_override and snap_settings.get("theme"):
@@ -1359,16 +1374,30 @@ def main() -> None:
         ticker.current(snap_rss)
         cur_rss_idx = ticker.idx
 
+        # ── Period label (needed by both grid and footer dirty checks) ──────────
+        start_date, span = _period_bounds(view, anchor)
+        label = _period_label(view, anchor)
+
         # ── Dirty flags ───────────────────────────────────────────────────────
         grid_dirty = (
-            topbar_surf is None                        or  # first frame
-            grid_surf is None                          or
-            cur_theme      != prev["theme"]            or
-            view           != prev["view"]             or
-            anchor         != prev["anchor"]           or
-            snap_cal_ts    != prev["calendar_ts"]      or
-            cur_day        != prev["day"]              or  # midnight: headers change
-            snap_sysinfo_ts != prev["sysinfo_ts"]          # footer CPU/RAM changed
+            grid_surf is None                                  or
+            cur_theme      != prev["theme"]                    or
+            view           != prev["view"]                     or
+            anchor         != prev["anchor"]                   or
+            snap_cal_ts    != prev["calendar_ts"]              or
+            cur_day        != prev["day"]                      or  # midnight: headers change
+            frozenset(snap_expired) != frozenset(prev["expired"])  # token warning appeared/cleared
+        )
+        # Footer has its own surface — CPU/RAM changes only trigger a footer redraw,
+        # not a full calendar grid redraw.
+        footer_dirty = (
+            footer_surf is None                        or
+            cur_theme        != prev["theme"]          or
+            view             != prev["view"]           or
+            anchor           != prev["anchor"]         or
+            cur_day          != prev["day"]            or
+            snap_settings_ts != prev["settings_ts"]    or  # custom_fqdn may have changed
+            snap_sysinfo_ts  != prev["sysinfo_ts"]         # CPU/RAM changed
         )
         cur_weather_view = snap_settings.get("weather_view", "daily")
         topbar_dirty = (
@@ -1381,21 +1410,35 @@ def main() -> None:
             cur_weather_view  != prev["weather_view"]           # forecast mode changed
         )
 
-        needs_flip = grid_dirty or topbar_dirty
+        needs_flip = grid_dirty or topbar_dirty or footer_dirty
 
         # ── Re-render dirty surfaces ──────────────────────────────────────────
         if grid_dirty:
             grid_surf = pygame.Surface((W, SURF_H))
             grid_surf.fill(C["bg"])
-            start_date, span = _period_bounds(view, anchor)
-            label = _period_label(view, anchor)
             if view in ("day", "week", "2week", "rolling"):
                 cur_allday_h = _draw_timegrid(grid_surf, C, snap_events,
                                               start_date, span, 0, GRID_Y, W, GRID_H)
             else:
                 _draw_cardgrid(grid_surf, C, snap_events,
                                start_date, 6, 0, GRID_Y, W, GRID_H)
-            _draw_footer(grid_surf, C, W, SURF_H, label, cached_ip, cached_host, snap_sysinfo)
+
+            # ── Expired-token warning banner ──────────────────────────────────
+            if snap_expired:
+                WARN_H   = _s(22)
+                names    = ", ".join(snap_expired)
+                msg_text = f"⚠  Google token expired: {names}  —  visit Settings to re-sign in"
+                warn     = pygame.Surface((W, WARN_H), pygame.SRCALPHA)
+                warn.fill((200, 90, 0, 220))          # amber, semi-transparent
+                fnt = _font(12, bold=True)
+                ts  = fnt.render(msg_text, True, (255, 255, 255))
+                warn.blit(ts, ts.get_rect(midleft=(_s(12), WARN_H // 2)))
+                grid_surf.blit(warn, (0, SURF_H - WARN_H))
+
+        if footer_dirty:
+            footer_surf = pygame.Surface((W, FOOTER_H))
+            display_host = snap_settings.get("custom_fqdn") or cached_host
+            _draw_footer(footer_surf, C, W, label, cached_ip, display_host, snap_sysinfo)
 
         if topbar_dirty:
             topbar_surf = pygame.Surface((W, TOPBAR_H))
@@ -1405,10 +1448,9 @@ def main() -> None:
         # ── Composite + flip ──────────────────────────────────────────────────
         if needs_flip:
             screen.blit(grid_surf,   (0, TOPBAR_H))
+            screen.blit(footer_surf, (0, H - FOOTER_H))
             screen.blit(topbar_surf, (0, 0))
-            # now-line is an overlay: grid blit erased last frame's line,
-            # then we paint the current position on top.
-            start_date, span = _period_bounds(view, anchor)
+            # now-line overlay — grid blit cleared the previous frame's line
             _draw_nowline(screen, C, view, anchor,
                           0, TOPBAR_H + GRID_Y, W, GRID_H, span, cur_allday_h)
             pygame.display.flip()
@@ -1427,6 +1469,7 @@ def main() -> None:
             "settings_ts":  snap_settings_ts,
             "sysinfo_ts":   snap_sysinfo_ts,
             "weather_view": cur_weather_view,
+            "expired":      snap_expired,
         })
 
         clock.tick(2)   # 2 FPS — responsive enough for keyboard; CPU near-zero between dirty events

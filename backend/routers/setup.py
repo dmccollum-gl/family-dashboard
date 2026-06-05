@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import os
 import subprocess
@@ -6,18 +7,39 @@ import threading
 import uuid
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 from config import settings
-from database import SessionLocal, UserPrefs
+from database import SessionLocal, UserPrefs, get_db
 from routers.calendar import _events_cache
 
 router = APIRouter()
 
 CONFIGURED_FLAG = "/opt/dashboard/.configured"
 CONFIG_PATH     = "/opt/dashboard/backend/dashboard_config.json"
+ENV_PATH        = "/opt/dashboard/backend/.env"
 APPLY_SCRIPT    = "/opt/dashboard/pi-setup-apply.sh"
 HOTSPOT_CON     = "dashboard-hotspot"
+
+
+def _read_env() -> dict:
+    env = {}
+    if os.path.exists(ENV_PATH):
+        for line in open(ENV_PATH):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                env[k.strip()] = v.strip()
+    return env
+
+
+def _write_env(updates: dict):
+    env = _read_env()
+    env.update({k: v for k, v in updates.items() if v})
+    with open(ENV_PATH, "w") as f:
+        f.write("\n".join(f"{k}={v}" for k, v in env.items()) + "\n")
 
 
 def _reset_user_data():
@@ -73,6 +95,92 @@ def reboot_pi():
         return {"success": True}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
+
+
+@router.get("/backup")
+def download_backup(db: Session = Depends(get_db)):
+    """Return a full JSON backup: config, OAuth credentials, and all user data."""
+    config = {}
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH) as f:
+            config = json.load(f)
+
+    env = _read_env()
+
+    users = db.query(UserPrefs).all()
+    backup = {
+        "version":    1,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "config":     config,
+        "env": {
+            "GOOGLE_CLIENT_ID":     env.get("GOOGLE_CLIENT_ID",     ""),
+            "GOOGLE_CLIENT_SECRET": env.get("GOOGLE_CLIENT_SECRET", ""),
+        },
+        "users": [
+            {
+                "email":              u.email,
+                "display_name":       u.display_name  or "",
+                "display_color":      u.display_color or "#1976d2",
+                "selected_calendars": u.selected_calendars or [],
+                "access_token":       u.access_token,
+                "refresh_token":      u.refresh_token,
+                "token_expiry":       u.token_expiry,
+                "role":               u.role    or "user",
+                "blocked":            u.blocked or 0,
+            }
+            for u in users
+        ],
+    }
+
+    stamp    = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    filename = f"dashboard-backup-{stamp}.json"
+    return Response(
+        content=json.dumps(backup, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/restore")
+def restore_backup(body: dict, db: Session = Depends(get_db)):
+    """Restore a backup produced by GET /backup. Overwrites config, env, and all users."""
+    if body.get("version") != 1:
+        raise HTTPException(status_code=400, detail="Unsupported backup version.")
+
+    # Restore dashboard config
+    if "config" in body and isinstance(body["config"], dict):
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(body["config"], f, indent=2)
+
+    # Restore OAuth credentials (only overwrite if present in backup)
+    if "env" in body and isinstance(body["env"], dict):
+        _write_env(body["env"])
+
+    # Restore all users
+    if "users" in body and isinstance(body["users"], list):
+        db.query(UserPrefs).delete()
+        for u in body["users"]:
+            if not u.get("email"):
+                continue
+            db.add(UserPrefs(
+                email              = u["email"],
+                display_name       = u.get("display_name",       ""),
+                display_color      = u.get("display_color",      "#1976d2"),
+                selected_calendars = u.get("selected_calendars", []),
+                access_token       = u.get("access_token"),
+                refresh_token      = u.get("refresh_token"),
+                token_expiry       = u.get("token_expiry"),
+                role               = u.get("role",    "user"),
+                blocked            = u.get("blocked", 0),
+            ))
+        db.commit()
+
+    # Invalidate the in-memory events cache
+    _events_cache["data"] = None
+    _events_cache["ts"]   = 0.0
+
+    return {"success": True}
 
 
 @router.post("/reset")
@@ -273,7 +381,8 @@ def configure(req: SetupRequest):
                 json.dump(config, f, indent=2)
         except Exception:
             pass
-        _reset_user_data()
+        if not os.path.exists(CONFIGURED_FLAG):
+            _reset_user_data()
         return {"success": True}
 
     try:
@@ -306,8 +415,11 @@ def configure(req: SetupRequest):
             with open(CONFIG_PATH, "w") as f:
                 json.dump(config, f, indent=2)
 
-        # Clear calendar users and RSS feeds — fresh install starts clean.
-        _reset_user_data()
+        # Clear calendar users and RSS feeds only on a true first-time setup.
+        # If the device was already configured (flag exists), keep the existing
+        # users — re-running configure just updates WiFi/device-name/city.
+        if not os.path.exists(CONFIGURED_FLAG):
+            _reset_user_data()
 
         # Mark device as configured.
         open(CONFIGURED_FLAG, "w").close()

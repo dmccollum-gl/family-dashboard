@@ -30,6 +30,7 @@ A Raspberry Pi kiosk for a family: full-screen Pygame display showing a shared G
 | Config JSON | `/opt/dashboard/backend/dashboard_config.json` |
 | Env (OAuth keys) | `/opt/dashboard/backend/.env` |
 | Python venv | `/opt/dashboard/venv/` |
+| Configured flag | `/opt/dashboard/.configured` |
 
 ## Services
 - `dashboard-backend` — uvicorn on port 8001 (systemd, auto-restart)
@@ -64,7 +65,7 @@ sshpass -p dashboard ssh -o StrictHostKeyChecking=no dashboard@10.115.115.243 "p
 ## Stack
 - **Backend**: FastAPI + uvicorn, SQLAlchemy ORM, SQLite, httpx
 - **Frontend**: React 18, Vite, MUI (Material UI), React Router, Axios
-- **Display**: Python + pygame, SDL kmsdrm (no X11)
+- **Display**: Python + pygame-ce (import is still `import pygame`), SDL kmsdrm (no X11)
 - **Proxy**: nginx reverse proxy + static file server
 
 ## Database schema — `user_prefs`
@@ -73,7 +74,7 @@ sshpass -p dashboard ssh -o StrictHostKeyChecking=no dashboard@10.115.115.243 "p
 | email | TEXT PK | Google account email |
 | display_name | TEXT | Full name |
 | display_color | TEXT | Hex color for calendar events |
-| selected_calendars | JSON | List of Google calendar IDs to show |
+| selected_calendars | JSON | List of `{"id": str, "color": str|null}` objects |
 | access_token | TEXT | Google OAuth access token |
 | refresh_token | TEXT | Google OAuth refresh token |
 | token_expiry | INTEGER | ms since epoch |
@@ -83,14 +84,24 @@ sshpass -p dashboard ssh -o StrictHostKeyChecking=no dashboard@10.115.115.243 "p
 Role rules: first user ever gets `owner`; any admin/owner can grant `admin`; only `owner` can demote admins; blocked users cannot re-sign-in and their calendars are hidden on the display.
 
 ## Config file — `dashboard_config.json`
-Keys: `owm_api_key`, `owm_location`, `owm_units`, `rss_feeds` (list), `display_theme` (auto/light/dark), `display_view` (day/week/2week/month), `custom_fqdn`, `rolling_view`
+Keys: `owm_api_key` (legacy, unused by weather.py), `owm_location`, `owm_units`, `rss_feeds` (list), `display_theme` (auto/light/dark), `display_view` (day/week/2week/month/rolling), `display_weather_view` (daily/hourly), `custom_fqdn`, `_geo_for`, `_geo_lat`, `_geo_lon` (geocode cache)
+
+**Weather uses Open-Meteo (free, no API key).** `owm_api_key` is a legacy key still in config but not used.
+
+## Weather — Open-Meteo
+- `weather.py` uses Open-Meteo API (free, no key needed)
+- Geocoding via Open-Meteo geocoding API; results cached in `dashboard_config.json` as `_geo_lat`/`_geo_lon`
+- 5-minute in-memory cache for both current/forecast and hourly endpoints
+- WMO weather codes mapped to OWM-style icon codes (e.g. `01d`) for display compatibility
 
 ## Image builder
-- `pi/build-image.sh` — builds flashable `.img` using Docker (ARM64 chroot on Apple Silicon, QEMU on x86)
+- `pi/build-image.sh` — **macOS-native** (hdiutil mounts FAT32 boot partition; no Docker required)
+- Workflow: downloads Pi OS Lite arm64, mounts boot partition, stages `firstrun.sh` into `cmdline.txt`
+- `firstrun.sh` runs apt + pip on Pi's first boot (~15 min)
 - Output: `pi/output/family-dashboard-v2.img`
 - Cached base image: `pi/.cache/raspios-lite-arm64.img`
-- Key scripts: `pi/chroot-setup.sh` (runs inside chroot), `pi/docker-customize.sh` (Docker wrapper)
-- First-boot: Pi starts a `Dashboard-Setup` WiFi hotspot; user connects and visits `http://10.42.0.1` to enter WiFi credentials
+- Key scripts: `pi/chroot-setup.sh`, `pi/pi-setup-apply.sh`, `pi/setup-mode.sh`
+- First-boot: Pi starts `Dashboard-Setup` WiFi hotspot; user connects and visits `http://10.42.0.1`
 
 ## Google OAuth notes
 - Uses `postmessage` redirect_uri (popup flow) — no redirect URI registered in Google Console
@@ -100,18 +111,21 @@ Keys: `owm_api_key`, `owm_location`, `owm_units`, `rss_feeds` (list), `display_t
 
 ---
 
-## Pending implementation (as of 2026-05-20)
+## Implemented (as of 2026-05-30)
 
-### Backend
-- **`auth.py`**: Check `prefs.blocked` → 403 before proceeding; auto-assign `role='owner'` when first user signs in (`db.query(UserPrefs).count() == 0`)
-- **`user_prefs.py`**: Return `role` and `blocked` in all GET responses; reject PUT with 403 if blocked; add `PATCH /{email}/role` and `PATCH /{email}/blocked` endpoints
-- **`calendar.py`** line ~110: filter `UserPrefs.blocked != 1` when querying users for event fetch
-- **`system_settings.py`**: Add `custom_fqdn` and `rolling_view` to display GET/PUT
+### Backend ✓
+- **`auth.py`**: Blocked check → 403; auto-assign `role='owner'` for first user; `role` in return value
+- **`user_prefs.py`**: `role`+`blocked` in all GET responses; 403 on PUT if blocked; `PATCH /{email}/role`; `PATCH /{email}/blocked`; owner cannot be deleted
+- **`calendar.py`**: Filter `blocked != 1` in user query
+- **`system_settings.py`**: `GET/PUT /api/settings/permissions` — configurable per-role section access
 
-### Frontend
-- **`Dashboard/index.jsx`**: Remove the Admin button from the footer (it's URL-only now)
-- **`Settings/index.jsx`**: Role-gated rendering — `user` role sees only My Account; add promote/demote/block/unblock buttons to FamilyMembers section
-- **`Admin/index.jsx`**: Add custom FQDN TextField and rolling_view toggle to DisplaySettings section
+### Frontend ✓
+- **`Settings/index.jsx`**: Role-gated sections (owner sees all; admin+user filtered by permissions config); FamilyMembers has role chips + promote/demote/block/unblock menu; PermissionsSettings component (owner configures admin+user; admin configures user only within their own sections)
+- **`Admin/index.jsx`**: Rolling_view ToggleButtonGroup added to DisplaySettings ✓
 
-### Display
-- **`display.py`**: Remove keyboard navigation (keep Q/ESC only for dev); implement rolling view (auto-advance anchor when current period doesn't contain today); use `custom_fqdn` from settings in footer
+### Display ✓
+- ~~`display.py` keyboard nav~~ **DONE** ✓ — all nav keys removed; exit is Ctrl+X only
+- Auto-detect display resolution via `pygame.display.Info()` + `list_modes()` fallback ✓
+
+### DB bootstrap ✓
+- `mccollumdavidj@gmail.com` set to `role='owner'` directly in SQLite (existing users had no role before auth.py was updated)

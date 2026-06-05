@@ -66,9 +66,20 @@ async def exchange_google_code(body: dict, db: Session = Depends(get_db)):
     email = info["email"]
 
     prefs = db.get(UserPrefs, email)
+
+    if prefs and prefs.blocked:
+        raise HTTPException(status_code=403, detail="Your account has been blocked by an administrator.")
+
     if not prefs:
-        prefs = UserPrefs(email=email)
+        is_first = db.query(UserPrefs).count() == 0
+        prefs = UserPrefs(
+            email=email,
+            selected_calendars=[{"id": email, "color": None}],
+            role="owner" if is_first else "user",
+        )
         db.add(prefs)
+    if not prefs.selected_calendars:
+        prefs.selected_calendars = [{"id": email, "color": None}]
     if not prefs.display_name:
         prefs.display_name = info.get("name", "")
     prefs.access_token = access_token
@@ -82,4 +93,5 @@ async def exchange_google_code(body: dict, db: Session = Depends(get_db)):
         "name":         info.get("name"),
         "picture":      info.get("picture"),
         "token_expiry": expiry_ms,
+        "role":         prefs.role or "user",
     }

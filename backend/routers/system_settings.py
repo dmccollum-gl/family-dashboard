@@ -97,19 +97,30 @@ def save_weather_config(body: dict):
 @router.get("/rss")
 def get_rss_config():
     cfg = _read_config()
-    return {"feeds": cfg.get("rss_feeds", [])}
+    return {
+        "feeds":       cfg.get("rss_feeds",   []),
+        "mode":        cfg.get("rss_mode",    "shuffle"),
+        "dad_jokes":   cfg.get("dad_jokes",   True),
+        "hacker_news": cfg.get("hacker_news", True),
+    }
 
 
 @router.put("/rss")
 def save_rss_config(body: dict):
     feeds = body.get("feeds", [])
-    # Each feed: {"url": "...", "label": "..."}
     cleaned = [
         {"url": f["url"].strip(), "label": f.get("label", "").strip()}
         for f in feeds
         if f.get("url", "").strip()
     ]
-    _write_config({"rss_feeds": cleaned})
+    updates: dict = {"rss_feeds": cleaned}
+    if body.get("mode") in {"shuffle", "rotate"}:
+        updates["rss_mode"] = body["mode"]
+    if "dad_jokes" in body:
+        updates["dad_jokes"] = bool(body["dad_jokes"])
+    if "hacker_news" in body:
+        updates["hacker_news"] = bool(body["hacker_news"])
+    _write_config(updates)
     return {"status": "saved", "count": len(cleaned)}
 
 
@@ -127,6 +138,7 @@ def get_display_config():
         "theme":        cfg.get("display_theme",        "auto"),
         "view":         cfg.get("display_view",         "week"),
         "weather_view": cfg.get("display_weather_view", "daily"),
+        "custom_fqdn":  cfg.get("custom_fqdn",          ""),
     }
 
 
@@ -139,8 +151,50 @@ def save_display_config(body: dict):
         updates["display_view"] = body["view"]
     if body.get("weather_view") in VALID_WEATHER_VIEWS:
         updates["display_weather_view"] = body["weather_view"]
+    if "custom_fqdn" in body:
+        updates["custom_fqdn"] = body["custom_fqdn"].strip()
     if updates:
         _write_config(updates)
+    return {"status": "saved"}
+
+
+# ── Permissions ───────────────────────────────────────────────────────────────
+
+SECTIONS = [
+    "weather_location",
+    "pi_display",
+    "add_calendar",
+    "family_calendars",
+    "family_members",
+    "rss_feeds",
+    "restart_services",
+]
+DEFAULT_PERMISSIONS = {
+    "admin": SECTIONS[:],
+    "user":  ["family_calendars"],
+}
+
+
+@router.get("/permissions")
+def get_permissions():
+    cfg = _read_config()
+    perms = cfg.get("permissions", {})
+    return {
+        "sections": SECTIONS,
+        "admin":    perms.get("admin", DEFAULT_PERMISSIONS["admin"]),
+        "user":     perms.get("user",  DEFAULT_PERMISSIONS["user"]),
+    }
+
+
+@router.put("/permissions")
+def save_permissions(body: dict):
+    cfg = _read_config()
+    perms = dict(cfg.get("permissions", {}))
+    if "admin" in body and isinstance(body["admin"], list):
+        perms["admin"] = [s for s in body["admin"] if s in SECTIONS]
+    if "user" in body and isinstance(body["user"], list):
+        perms["user"] = [s for s in body["user"] if s in SECTIONS]
+    _write_config({"permissions": perms})
     return {"status": "saved"}
 
 

@@ -5,6 +5,7 @@ import Dashboard from "./pages/Dashboard";
 import Settings  from "./pages/Settings";
 import Admin     from "./pages/Admin";
 import Setup     from "./pages/Setup";
+import Mobile    from "./pages/Mobile";
 
 export const ColorModeContext = createContext({ toggle: () => {}, mode: "light", effectiveMode: "light" });
 
@@ -22,14 +23,21 @@ function computeAutoMode(sunTimes) {
   return h >= 6 && h < 20 ? "light" : "dark";
 }
 
+// Detect mobile: phone/tablet UA or a narrow touch screen (excludes the Pi kiosk).
+const isMobile =
+  /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+  (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
+
 export default function App() {
   const [needsSetup, setNeedsSetup] = useState(false);
 
   useEffect(() => {
     fetch("/api/setup/status")
       .then(r => r.json())
-      // Show setup if not configured OR if the hotspot is active (recovery mode)
-      .then(d => setNeedsSetup(!d.configured || d.setup_mode === true))
+      // Only show setup if the device has never been configured.
+      // Recovery hotspot mode on an already-configured Pi must NOT redirect here —
+      // that's what was silently wiping user data on router restarts.
+      .then(d => setNeedsSetup(!d.configured))
       .catch(() => setNeedsSetup(false)); // dev environment — skip setup
   }, []);
 
@@ -96,7 +104,8 @@ export default function App() {
             <Route path="*" element={<Navigate to="/setup" replace />} />
           ) : (
             <>
-              <Route path="/"         element={<Dashboard />} />
+              <Route path="/"         element={isMobile ? <Navigate to="/mobile" replace /> : <Dashboard />} />
+              <Route path="/mobile"   element={<Mobile />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/admin"    element={<Admin />} />
               <Route path="*"         element={<Navigate to="/" replace />} />

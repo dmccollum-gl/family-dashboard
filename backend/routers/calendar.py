@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import re
 import time
 from fastapi import APIRouter, HTTPException
 from datetime import datetime, timezone, timedelta
@@ -13,6 +15,7 @@ ENV_PATH = Path(__file__).parent.parent / ".env"
 
 # In-memory cache + lock for /events — prevents concurrent fetches from all hitting Google.
 _events_cache: dict = {"data": None, "ts": 0.0}
+_last_good_events: dict | None = None  # survives cache expiry; returned when Google is unreachable
 _events_lock: asyncio.Lock | None = None  # created lazily (can't create at module import time)
 _CACHE_TTL = 90  # seconds
 
@@ -107,7 +110,7 @@ async def get_all_events(start: str = None, end: str = None):
 
         db = SessionLocal()
         try:
-            users = db.query(UserPrefs).filter(UserPrefs.access_token.isnot(None)).all()
+            users = db.query(UserPrefs).filter(UserPrefs.blocked != 1).all()
         finally:
             db.close()
 
@@ -118,8 +121,9 @@ async def get_all_events(start: str = None, end: str = None):
         time_min = start or week_ago.isoformat()
         time_max = end   or (now + timedelta(days=8)).isoformat()
 
-        all_events    = []
-        expired_users = []
+        all_events     = []
+        expired_users  = []
+        network_errors = 0  # count Google API connection failures
 
         async with httpx.AsyncClient(timeout=10) as client:
             for user in users:
@@ -146,7 +150,7 @@ async def get_all_events(start: str = None, end: str = None):
                         for cal in list_res.json().get("items", []):
                             cal_names[cal["id"]] = cal.get("summaryOverride") or cal.get("summary") or cal["id"]
                 except Exception:
-                    pass
+                    network_errors += 1
 
                 for cfg in cal_configs:
                     cal_id    = cfg["id"]
@@ -183,9 +187,19 @@ async def get_all_events(start: str = None, end: str = None):
                                 "calendarName": cal_name,
                             })
                     except Exception:
+                        network_errors += 1
                         continue
 
+        global _last_good_events
+
+        # If Google was unreachable and we have a prior good result, serve it rather
+        # than caching an empty list that would blank the display.
+        if network_errors and not all_events and _last_good_events is not None:
+            return _last_good_events
+
         result = {"events": all_events, "expired_users": expired_users}
+        if all_events:
+            _last_good_events = result
         if use_cache:
             _events_cache["data"] = result
             _events_cache["ts"]   = time.monotonic()
@@ -208,14 +222,17 @@ async def get_calendar_list(email: str):
     if not token:
         raise HTTPException(status_code=401, detail="Token expired — please sign in again.")
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        res = await client.get(
-            "https://www.googleapis.com/calendar/v3/users/me/calendarList",
-            params={"maxResults": "250"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(
+                "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+                params={"maxResults": "250"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception:
+        raise HTTPException(status_code=503, detail="Could not reach Google Calendar API.")
     if res.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch calendar list from Google.")
+        raise HTTPException(status_code=422, detail="Failed to fetch calendar list from Google.")
 
     return {"calendars": res.json().get("items", [])}
 
@@ -236,31 +253,42 @@ async def unsubscribe_calendar(email: str, calendar_id: str):
     if not token:
         raise HTTPException(status_code=401, detail="Token expired — please sign in again.")
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        res = await client.delete(
-            f"https://www.googleapis.com/calendar/v3/users/me/calendarList/{quote(calendar_id, safe='')}",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.delete(
+                f"https://www.googleapis.com/calendar/v3/users/me/calendarList/{quote(calendar_id, safe='')}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception:
+        raise HTTPException(status_code=503, detail="Could not reach Google Calendar API.")
 
     if res.status_code not in (200, 204):
         try:
             detail = res.json().get("error", {}).get("message", "Failed to unsubscribe.")
         except Exception:
             detail = "Failed to unsubscribe."
-        raise HTTPException(status_code=502, detail=detail)
+        raise HTTPException(status_code=422, detail=detail)
 
     return {"status": "unsubscribed"}
 
 
+def _calendar_share_url(calendar_id: str) -> str:
+    """Construct the Google Calendar sharing link for a given calendar ID."""
+    cid = base64.urlsafe_b64encode(calendar_id.encode()).decode().rstrip("=")
+    return f"https://calendar.google.com/calendar/r?cid={cid}"
+
+
 @router.post("/subscription/{email}")
 async def subscribe_calendar(email: str, body: dict):
-    calendar_id = body.get("calendar_id")
+    calendar_id  = body.get("calendar_id")
+    owner_email  = body.get("owner_email")  # caller passes this when assigning from their own calendar list
     if not calendar_id:
         raise HTTPException(status_code=400, detail="Missing calendar_id.")
 
     db = SessionLocal()
     try:
-        user = db.get(UserPrefs, email)
+        user  = db.get(UserPrefs, email)
+        owner = db.get(UserPrefs, owner_email) if (owner_email and owner_email != email) else None
     finally:
         db.close()
 
@@ -272,18 +300,86 @@ async def subscribe_calendar(email: str, body: dict):
     if not token:
         raise HTTPException(status_code=401, detail="Token expired — please sign in again.")
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        res = await client.post(
-            "https://www.googleapis.com/calendar/v3/users/me/calendarList",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"id": calendar_id},
-        )
-
-    if res.status_code not in (200, 201):
+    async def _subscribe():
         try:
-            detail = res.json().get("error", {}).get("message", "Failed to subscribe.")
+            async with httpx.AsyncClient(timeout=10) as client:
+                return await client.post(
+                    "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"id": calendar_id},
+                )
+        except Exception:
+            raise HTTPException(status_code=503, detail="Could not reach Google Calendar API.")
+
+    res = await _subscribe()
+
+    if res.status_code in (200, 201):
+        return {"status": "subscribed"}
+
+    # Non-404 Google error — surface it directly.
+    if res.status_code != 404:
+        try:
+            detail = res.json().get("error", {}).get("message", "") or "Failed to subscribe."
         except Exception:
             detail = "Failed to subscribe."
-        raise HTTPException(status_code=502, detail=detail)
+        raise HTTPException(status_code=422, detail=detail)
 
-    return {"status": "subscribed"}
+    # 404: calendar not accessible to the target user.
+    # Try granting access via the owner's token if we have it.
+    acl_denied = False  # True when owner exists but lacks ACL write permission
+
+    owner_token = await _get_valid_token(owner, env) if owner else None
+    if owner_token:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                acl_res = await client.post(
+                    f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/acl",
+                    headers={"Authorization": f"Bearer {owner_token}"},
+                    json={"role": "reader", "scope": {"type": "user", "value": email}},
+                )
+            if acl_res.status_code in (200, 201):
+                # Access granted — retry the subscription.
+                res = await _subscribe()
+                if res.status_code in (200, 201):
+                    return {"status": "subscribed"}
+            elif acl_res.status_code == 403:
+                # Owner can't manage ACL — they subscribed to this calendar themselves
+                # (it belongs to someone outside the dashboard).
+                acl_denied = True
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+    # For imported ICS calendars, try to recover the original subscription URL from the
+    # owner's calendar metadata and reuse it to subscribe the target user directly.
+    if "@import.calendar.google.com" in calendar_id and owner_token:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                meta_res = await client.get(
+                    f"https://www.googleapis.com/calendar/v3/users/me/calendarList/{quote(calendar_id, safe='')}",
+                    headers={"Authorization": f"Bearer {owner_token}"},
+                )
+            if meta_res.status_code == 200:
+                meta = meta_res.json()
+                ics_url = None
+                for val in meta.values():
+                    if isinstance(val, str):
+                        m = re.search(r'webcal://\S+|https?://\S+?\.ics\b\S*', val, re.IGNORECASE)
+                        if m:
+                            ics_url = m.group(0).rstrip(".,;)>\"'").replace("webcal://", "https://")
+                            break
+                if ics_url:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        ics_res = await client.post(
+                            "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+                            headers={"Authorization": f"Bearer {token}"},
+                            json={"id": ics_url},
+                        )
+                    if ics_res.status_code in (200, 201):
+                        return {"status": "subscribed"}
+        except Exception:
+            pass
+
+    # Can't subscribe automatically — return the sharing URL so the frontend can guide the user.
+    return {"status": "share_required", "share_url": _calendar_share_url(calendar_id)}

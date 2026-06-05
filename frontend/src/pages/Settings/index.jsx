@@ -1,30 +1,39 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Box, Typography, Button, Divider, Alert, TextField,
   CircularProgress, List, ListItem, Avatar, Chip, Menu, MenuItem,
   Dialog, DialogTitle, DialogContent, DialogActions,
   Switch, ListItemText, ListItemIcon, IconButton, Tooltip,
   Checkbox, Radio, RadioGroup, FormControlLabel, FormControl, FormLabel,
-  ToggleButton, ToggleButtonGroup,
-  Accordion, AccordionSummary, AccordionDetails,
+  ToggleButton, ToggleButtonGroup, InputAdornment,
 } from "@mui/material";
-import ExpandMoreIcon        from "@mui/icons-material/ExpandMore";
-import SaveIcon              from "@mui/icons-material/Save";
-import AccountCircleIcon     from "@mui/icons-material/AccountCircle";
-import DashboardIcon         from "@mui/icons-material/Dashboard";
-import LogoutIcon            from "@mui/icons-material/Logout";
-import CalendarMonthIcon     from "@mui/icons-material/CalendarMonth";
-import DeleteIcon            from "@mui/icons-material/Delete";
-import RefreshIcon           from "@mui/icons-material/Refresh";
-import MoreVertIcon          from "@mui/icons-material/MoreVert";
-import GroupAddIcon          from "@mui/icons-material/GroupAdd";
-import AddCircleOutlineIcon  from "@mui/icons-material/AddCircleOutline";
-import AddIcon               from "@mui/icons-material/Add";
-import RssFeedIcon           from "@mui/icons-material/RssFeed";
-import CloudIcon             from "@mui/icons-material/Cloud";
-import ClearIcon             from "@mui/icons-material/Clear";
-import TvIcon                from "@mui/icons-material/Tv";
-import ReplayIcon            from "@mui/icons-material/Replay";
+import SaveIcon                  from "@mui/icons-material/Save";
+import AccountCircleIcon         from "@mui/icons-material/AccountCircle";
+import DashboardIcon             from "@mui/icons-material/Dashboard";
+import LogoutIcon                from "@mui/icons-material/Logout";
+import CalendarMonthIcon         from "@mui/icons-material/CalendarMonth";
+import ContentCopyIcon           from "@mui/icons-material/ContentCopy";
+import DeleteIcon                from "@mui/icons-material/Delete";
+import RefreshIcon               from "@mui/icons-material/Refresh";
+import MoreVertIcon              from "@mui/icons-material/MoreVert";
+import GroupAddIcon              from "@mui/icons-material/GroupAdd";
+import AddCircleOutlineIcon      from "@mui/icons-material/AddCircleOutline";
+import AddIcon                   from "@mui/icons-material/Add";
+import RssFeedIcon               from "@mui/icons-material/RssFeed";
+import CloudIcon                 from "@mui/icons-material/Cloud";
+import ClearIcon                 from "@mui/icons-material/Clear";
+import TvIcon                    from "@mui/icons-material/Tv";
+import ReplayIcon                from "@mui/icons-material/Replay";
+import SecurityIcon              from "@mui/icons-material/Security";
+import AdminPanelSettingsIcon    from "@mui/icons-material/AdminPanelSettings";
+import LockIcon                  from "@mui/icons-material/Lock";
+import BackupIcon                from "@mui/icons-material/Backup";
+import RestartAltIcon            from "@mui/icons-material/RestartAlt";
+import DownloadIcon              from "@mui/icons-material/Download";
+import UploadIcon                from "@mui/icons-material/Upload";
+import VisibilityIcon            from "@mui/icons-material/Visibility";
+import VisibilityOffIcon         from "@mui/icons-material/VisibilityOff";
+import OpenInNewIcon             from "@mui/icons-material/OpenInNew";
 import { googleLogout, useGoogleLogin } from "@react-oauth/google";
 import { useNavigate } from "react-router-dom";
 import api from "../../api/client";
@@ -45,7 +54,22 @@ function getStoredUser() {
 function storeUser(u)  { localStorage.setItem("dashboard_active_user", JSON.stringify(u)); }
 function clearStoredUser() { localStorage.removeItem("dashboard_active_user"); }
 
+function getStoredRole() { return localStorage.getItem("dashboard_role") || "user"; }
+function storeRole(r)    { localStorage.setItem("dashboard_role", r); }
+function clearStoredRole() { localStorage.removeItem("dashboard_role"); }
+
 // ── Calendar URL / ID parser ───────────────────────────────────────────────────
+
+function calShareUrl(calId) {
+  const b64 = btoa(calId).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `https://calendar.google.com/calendar/r?cid=${b64}`;
+}
+
+// Google Calendar "Add from URL" deep-link — opens the subscribe confirmation dialog.
+function googleCalSubscribeUrl(calId) {
+  const icsUrl = `https://calendar.google.com/calendar/ical/${encodeURIComponent(calId)}/public/basic.ics`;
+  return `https://calendar.google.com/calendar/render?cid=${encodeURIComponent(icsUrl)}`;
+}
 
 function extractCalendarId(raw) {
   const s = raw.trim();
@@ -58,37 +82,19 @@ function extractCalendarId(raw) {
   return s;
 }
 
-// ── Collapsible section wrapper ────────────────────────────────────────────────
+// ── Section content wrapper (used inside each tab pane) ──────────────────────
 
-function Section({ icon, title, children, defaultExpanded = true }) {
+function Section({ icon, title, children }) {
   return (
-    <Accordion
-      defaultExpanded={defaultExpanded}
-      disableGutters
-      elevation={0}
-      sx={{
-        border: "1px solid",
-        borderColor: "divider",
-        borderRadius: "8px !important",
-        overflow: "hidden",
-        "&:before": { display: "none" },
-      }}
-    >
-      <AccordionSummary
-        expandIcon={<ExpandMoreIcon />}
-        sx={{ px: 3, py: 1.5, "& .MuiAccordionSummary-content": { alignItems: "center", gap: 1 } }}
-      >
-        <Box sx={{ color: "primary.main", display: "flex" }}>{icon}</Box>
-        <Typography variant="h6" fontWeight={600}>{title}</Typography>
-      </AccordionSummary>
-      <AccordionDetails sx={{
-        px: 3, py: 2.5,
-        display: "flex", flexDirection: "column", gap: 2,
-        borderTop: "1px solid", borderColor: "divider",
-      }}>
-        {children}
-      </AccordionDetails>
-    </Accordion>
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      {(icon || title) && (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, pb: 1.5, borderBottom: "1px solid", borderColor: "divider" }}>
+          {icon && <Box sx={{ color: "primary.main", display: "flex" }}>{icon}</Box>}
+          {title && <Typography variant="h6" fontWeight={600}>{title}</Typography>}
+        </Box>
+      )}
+      {children}
+    </Box>
   );
 }
 
@@ -205,21 +211,22 @@ function FamilySharingDialog({ cal, ownerEmail, open, onClose }) {
 
 // ── Assign Calendar dialog ─────────────────────────────────────────────────────
 
-function AssignCalendarDialog({ cal, open, onClose }) {
+function AssignCalendarDialog({ cal, open, onClose, ownerEmail, onSaved }) {
   const [members,   setMembers]   = useState([]);
   const [primary,   setPrimary]   = useState("");
   const [secondary, setSecondary] = useState(new Set());
   const [busy,      setBusy]      = useState(false);
   const [msg,       setMsg]       = useState(null);
   const [error,     setError]     = useState(null);
+  const [shareUrl,  setShareUrl]  = useState(null);
 
   useEffect(() => {
     if (!open || !cal) return;
-    setMsg(null); setError(null);
+    setMsg(null); setError(null); setSecondary(new Set()); setShareUrl(null);
     api.get("/api/user-prefs").then(res => {
       const m = res.data || [];
       setMembers(m);
-      if (m.length && !primary) setPrimary(m[0].email);
+      setPrimary(m.length ? m[0].email : "");
     }).catch(() => {});
   }, [open, cal]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -239,22 +246,42 @@ function AssignCalendarDialog({ cal, open, onClose }) {
 
   const handleSave = async () => {
     if (!primary || !cal) return;
-    setBusy(true); setMsg(null); setError(null);
+    setBusy(true); setMsg(null); setError(null); setShareUrl(null);
+    let pendingShareUrl = null;
     try {
-      await api.post(`/api/calendar/subscription/${encodeURIComponent(primary)}`, { calendar_id: cal.id });
+      // Subscribe primary (best effort — imported/external calendars return share_required)
+      try {
+        const subRes = await api.post(`/api/calendar/subscription/${encodeURIComponent(primary)}`, { calendar_id: cal.id, owner_email: ownerEmail });
+        if (subRes.data?.status === "share_required") pendingShareUrl = subRes.data.share_url;
+      } catch (_) {}
+
+      // Turn ON for primary
       const prefsRes = await api.get(`/api/user-prefs/${encodeURIComponent(primary)}`);
       const existing = prefsRes.data.selected_calendars || [];
       if (!existing.some(c => c.id === cal.id)) {
         existing.push({ id: cal.id, color: null });
       }
       await api.put(`/api/user-prefs/${encodeURIComponent(primary)}`, { selected_calendars: existing });
+
+      // All non-primary members: subscribe if secondary (best effort), always turn OFF for dashboard
       await Promise.allSettled(
-        [...secondary].filter(e => e !== primary).map(email =>
-          api.post(`/api/calendar/subscription/${encodeURIComponent(email)}`, { calendar_id: cal.id })
-        )
+        members.filter(m => m.email !== primary).map(async m => {
+          if (secondary.has(m.email)) {
+            try {
+              const subRes = await api.post(`/api/calendar/subscription/${encodeURIComponent(m.email)}`, { calendar_id: cal.id, owner_email: ownerEmail });
+              if (!pendingShareUrl && subRes.data?.status === "share_required") pendingShareUrl = subRes.data.share_url;
+            } catch (_) {}
+          }
+          const secPrefs = await api.get(`/api/user-prefs/${encodeURIComponent(m.email)}`);
+          const stripped = (secPrefs.data.selected_calendars || []).filter(c => c.id !== cal.id);
+          await api.put(`/api/user-prefs/${encodeURIComponent(m.email)}`, { selected_calendars: stripped });
+        })
       );
+
       const name = members.find(m => m.email === primary)?.display_name || primary;
       setMsg(`Assigned to ${name} — will appear on the dashboard.`);
+      if (pendingShareUrl) setShareUrl(pendingShareUrl);
+      if (onSaved) onSaved();
     } catch (e) {
       setError(e?.response?.data?.detail || "Failed to assign calendar.");
     } finally { setBusy(false); }
@@ -266,8 +293,14 @@ function AssignCalendarDialog({ cal, open, onClose }) {
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
       <DialogTitle>Assign "{cal?.summary}"</DialogTitle>
       <DialogContent>
-        {msg   && <Alert severity="success" sx={{ mb: 2 }}>{msg}</Alert>}
-        {error && <Alert severity="error"   sx={{ mb: 2 }}>{error}</Alert>}
+        {msg      && <Alert severity="success" sx={{ mb: 2 }}>{msg}</Alert>}
+        {error    && <Alert severity="error"   sx={{ mb: 2 }}>{error}</Alert>}
+        {shareUrl && (
+          <Alert severity="info" onClose={() => setShareUrl(null)} sx={{ mb: 2 }}
+            action={<Button size="small" onClick={() => window.open(shareUrl, "_blank")}>Open Link</Button>}>
+            This calendar can't be shared automatically. Share this link with assigned members so they can subscribe.
+          </Alert>
+        )}
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           The primary user's copy will show on the dashboard. Secondary users get it
           added to their Google Calendar without dashboard visibility.
@@ -324,7 +357,7 @@ function AssignCalendarDialog({ cal, open, onClose }) {
 const SCOPE_ERROR = "Request had insufficient authentication scopes";
 function isScopeError(msg) { return typeof msg === "string" && msg.includes("insufficient authentication scopes"); }
 
-function CalendarPicker({ email, selected, onChange, calColors, onColorChange, userColor, onReauth }) {
+function CalendarPicker({ email, selected, onChange, calColors, onColorChange, userColor, onReauth, onCalendarAssigned }) {
   const [calendars,    setCalendars]    = useState([]);
   const [loading,      setLoading]      = useState(false);
   const [error,        setError]        = useState(null);
@@ -336,6 +369,7 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
   const [assignDialog, setAssignDialog] = useState(null);
   const [busy,         setBusy]         = useState(null);
   const [actionMsg,    setActionMsg]    = useState(null);
+  const [copiedId,     setCopiedId]     = useState(null);
 
   const load = useCallback(async () => {
     if (!email) return;
@@ -386,8 +420,16 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
     setBusy(cal.id);
     const name = members.find(m => m.email === targetEmail)?.display_name || targetEmail;
     try {
-      await api.post(`/api/calendar/subscription/${encodeURIComponent(targetEmail)}`, { calendar_id: cal.id });
-      setActionMsg(`Copied "${cal.summary || cal.id}" to ${name}`);
+      const res = await api.post(`/api/calendar/subscription/${encodeURIComponent(targetEmail)}`, {
+        calendar_id: cal.id,
+        owner_email: email,
+      });
+      if (res.data?.status === "share_required") {
+        window.open(res.data.share_url, "_blank");
+        setActionMsg(`Opened subscription link for "${cal.summary || cal.id}" — share it with ${name}.`);
+      } else {
+        setActionMsg(`Copied "${cal.summary || cal.id}" to ${name}`);
+      }
     } catch (e) {
       const msg = e?.response?.data?.detail || "Copy failed.";
       setError(isScopeError(msg) ? scopeOtherErr(targetEmail) : msg);
@@ -523,6 +565,16 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
                     </IconButton>
                   </Tooltip>
                 )}
+                <Tooltip title={copiedId === cal.id ? "Copied!" : calShareUrl(cal.id)}>
+                  <IconButton size="small" onClick={e => {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(calShareUrl(cal.id));
+                    setCopiedId(cal.id);
+                    setTimeout(() => setCopiedId(id => id === cal.id ? null : id), 2000);
+                  }}>
+                    <ContentCopyIcon sx={{ fontSize: 14, color: copiedId === cal.id ? "success.main" : "inherit" }} />
+                  </IconButton>
+                </Tooltip>
                 <Tooltip title="Family sharing">
                   <IconButton size="small" onClick={() => setShareDialog(cal)}>
                     <GroupAddIcon fontSize="small" />
@@ -615,6 +667,8 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
         cal={assignDialog}
         open={!!assignDialog}
         onClose={() => setAssignDialog(null)}
+        ownerEmail={email}
+        onSaved={onCalendarAssigned}
       />
     </Box>
   );
@@ -622,14 +676,16 @@ function CalendarPicker({ email, selected, onChange, calColors, onColorChange, u
 
 // ── My Account inner ───────────────────────────────────────────────────────────
 
-function MyAccountInner({ hasSecret }) {
-  const [user,      setUser]      = useState(getStoredUser);
-  const [color,     setColor]     = useState("#1976d2");
-  const [hexDraft,  setHexDraft]  = useState("#1976d2");
-  const [selected,  setSelected]  = useState(new Set());
-  const [calColors, setCalColors] = useState(new Map());
-  const [saving,    setSaving]    = useState(false);
-  const [signing,   setSigning]   = useState(false);
+function MyAccountInner({ hasSecret, onSignIn, onSignOut }) {
+  const [user,         setUser]         = useState(getStoredUser);
+  const [color,        setColor]        = useState("#1976d2");
+  const [hexDraft,     setHexDraft]     = useState("#1976d2");
+  const [selected,     setSelected]     = useState(new Set());
+  const [calColors,    setCalColors]    = useState(new Map());
+  const [saving,       setSaving]       = useState(false);
+  const [signing,      setSigning]      = useState(false);
+  const [removing,     setRemoving]     = useState(false);
+  const [removeDialog, setRemoveDialog] = useState(false);
   const [msg,       setMsg]       = useState(null);
   const [error,     setError]     = useState(null);
 
@@ -651,6 +707,7 @@ function MyAccountInner({ hasSecret }) {
       const res = await api.post("/api/auth/google", { code: codeResponse.code });
       const u = { email: res.data.email, name: res.data.name, picture: res.data.picture };
       setUser(u); storeUser(u); loadPrefs(u.email);
+      if (onSignIn) onSignIn({ ...u, role: res.data.role || "user" });
     } catch (e) {
       setError(e?.response?.data?.detail || "Sign-in failed. Make sure the Client Secret is saved in Admin settings.");
     } finally { setSigning(false); }
@@ -672,6 +729,10 @@ function MyAccountInner({ hasSecret }) {
         selected_calendars: calsList, access_token: tokenResponse.access_token, token_expiry: expiryMs,
       });
       setUser(u); storeUser(u); loadPrefs(u.email);
+      try {
+        const prefsRes = await api.get(`/api/user-prefs/${encodeURIComponent(info.email)}`);
+        if (onSignIn) onSignIn({ ...u, role: prefsRes.data.role || "user" });
+      } catch { if (onSignIn) onSignIn({ ...u, role: "user" }); }
     } catch (e) {
       setError(e?.response?.data?.detail || "Sign-in failed.");
     } finally { setSigning(false); }
@@ -680,6 +741,23 @@ function MyAccountInner({ hasSecret }) {
   const handleLogout = () => {
     googleLogout(); clearStoredUser();
     setUser(null); setColor("#1976d2"); setSelected(new Set()); setCalColors(new Map()); setMsg(null);
+    if (onSignOut) onSignOut();
+  };
+
+  const handleRemoveSelf = async () => {
+    if (!user) return;
+    setRemoving(true); setError(null);
+    try {
+      await api.delete(`/api/user-prefs/${encodeURIComponent(user.email)}`);
+      googleLogout();
+      clearStoredUser();
+      clearStoredRole();
+      setUser(null); setColor("#1976d2"); setSelected(new Set()); setCalColors(new Map());
+      if (onSignOut) onSignOut();
+    } catch (e) {
+      setError(e?.response?.data?.detail || "Could not remove your account. Please try again.");
+      setRemoving(false);
+    }
   };
 
   const handleSave = async () => {
@@ -771,6 +849,7 @@ function MyAccountInner({ hasSecret }) {
         })}
         userColor={color}
         onReauth={handleLogout}
+        onCalendarAssigned={() => loadPrefs(user.email)}
       />
 
       {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
@@ -783,13 +862,59 @@ function MyAccountInner({ hasSecret }) {
           Save My Settings
         </Button>
       </Box>
+
+      {getStoredRole() !== "owner" && (
+        <>
+          <Divider sx={{ mt: 1 }} />
+          <Box>
+            <Typography variant="body2" fontWeight={500} color="text.secondary" gutterBottom>
+              Danger Zone
+            </Typography>
+            <Button
+              variant="outlined"
+              color="error"
+              size="small"
+              startIcon={removing ? <CircularProgress size={16} color="inherit" /> : <DeleteIcon />}
+              onClick={() => setRemoveDialog(true)}
+              disabled={removing}
+            >
+              Remove My Account
+            </Button>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+              Removes you from the dashboard. Your Google Calendar is not affected.
+            </Typography>
+          </Box>
+        </>
+      )}
+
+      <Dialog open={removeDialog} onClose={() => setRemoveDialog(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Remove your account?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            This will remove <strong>{user?.name}</strong> from the dashboard and sign you out.
+            Your Google account and calendars are not affected — you can re-add yourself at any time by signing in again.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRemoveDialog(false)}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={removing}
+            startIcon={removing ? <CircularProgress size={16} color="inherit" /> : null}
+            onClick={() => { setRemoveDialog(false); handleRemoveSelf(); }}
+          >
+            Remove My Account
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
 
 // ── Shell ──────────────────────────────────────────────────────────────────────
 
-function MyAccount() {
+function MyAccount({ onSignIn, onSignOut }) {
   const [clientId,  setClientId]  = useState(null);
   const [hasSecret, setHasSecret] = useState(false);
 
@@ -809,7 +934,7 @@ function MyAccount() {
           <a href="/admin" style={{ color: "inherit" }}>admin page</a> and add the Google credentials.
         </Alert>
       ) : (
-        <MyAccountInner hasSecret={hasSecret} />
+        <MyAccountInner hasSecret={hasSecret} onSignIn={onSignIn} onSignOut={onSignOut} />
       )}
     </Section>
   );
@@ -849,7 +974,10 @@ function AddCalendar() {
     if (!calValid || !primary) return;
     setSubmitting(true); setMsg(null); setError(null);
     try {
-      await api.post(`/api/calendar/subscription/${encodeURIComponent(primary)}`, { calendar_id: calId });
+      // Subscribe primary (best effort — updates selected_calendars regardless)
+      try {
+        await api.post(`/api/calendar/subscription/${encodeURIComponent(primary)}`, { calendar_id: calId });
+      } catch (_) {}
       const prefsRes = await api.get(`/api/user-prefs/${encodeURIComponent(primary)}`);
       const existing = prefsRes.data.selected_calendars || [];
       if (!existing.some(c => c.id === calId)) {
@@ -857,9 +985,12 @@ function AddCalendar() {
       }
       await api.put(`/api/user-prefs/${encodeURIComponent(primary)}`, { selected_calendars: existing });
       await Promise.allSettled(
-        [...secondary].map(email =>
-          api.post(`/api/calendar/subscription/${encodeURIComponent(email)}`, { calendar_id: calId })
-        )
+        [...secondary].map(async email => {
+          try { await api.post(`/api/calendar/subscription/${encodeURIComponent(email)}`, { calendar_id: calId }); } catch (_) {}
+          const secPrefs = await api.get(`/api/user-prefs/${encodeURIComponent(email)}`);
+          const stripped = (secPrefs.data.selected_calendars || []).filter(c => c.id !== calId);
+          await api.put(`/api/user-prefs/${encodeURIComponent(email)}`, { selected_calendars: stripped });
+        })
       );
       const name = members.find(m => m.email === primary)?.display_name || primary;
       setMsg(`Calendar added and set to display on the dashboard for ${name}.`);
@@ -956,10 +1087,99 @@ function AddCalendar() {
 
 // ── Family Members ─────────────────────────────────────────────────────────────
 
-function FamilyMembers() {
-  const [members,  setMembers]  = useState([]);
-  const [removing, setRemoving] = useState(null);
-  const [error,    setError]    = useState(null);
+// ── Family Calendars — subscribe to other users' dashboard calendars ─────────
+
+function FamilyCalendars() {
+  const currentUser = getStoredUser();
+  const [members,  setMembers]  = useState([]);   // other users with their selected_calendars
+  const [calNames, setCalNames] = useState({});   // email → { calId → summary }
+  const [loading,  setLoading]  = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get("/api/user-prefs").then(async res => {
+      const all = (res.data || []).filter(m =>
+        m.email !== currentUser?.email && (m.selected_calendars || []).length > 0
+      );
+      setMembers(all);
+
+      const nameMap = {};
+      await Promise.allSettled(all.map(async m => {
+        try {
+          const r = await api.get(`/api/calendar/list/${encodeURIComponent(m.email)}`);
+          nameMap[m.email] = {};
+          for (const cal of (r.data.calendars || [])) {
+            nameMap[m.email][cal.id] = cal.summaryOverride || cal.summary || cal.id;
+          }
+        } catch {}
+      }));
+      setCalNames(nameMap);
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <Section icon={<GroupAddIcon />} title="Family Calendars">
+      <Typography variant="body2" color="text.secondary">
+        Calendars shown on the dashboard by other family members. Click <strong>Subscribe</strong> to add one to your own Google Calendar.
+      </Typography>
+      {loading ? (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, py: 1 }}>
+          <CircularProgress size={18} />
+          <Typography variant="body2" color="text.secondary">Loading…</Typography>
+        </Box>
+      ) : !members.length ? (
+        <Typography variant="body2" color="text.secondary">
+          No other family members have connected their calendars yet.
+        </Typography>
+      ) : (
+        members.map(m => (
+          <Box key={m.email}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
+              <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: m.display_color, flexShrink: 0 }} />
+              <Typography variant="body2" fontWeight={600}>{m.display_name || m.email}</Typography>
+            </Box>
+            <List dense disablePadding sx={{ pl: 2.5 }}>
+              {(m.selected_calendars || []).map(c => {
+                const name = calNames[m.email]?.[c.id] || c.id;
+                const color = c.color || m.display_color || "#1976d2";
+                return (
+                  <ListItem key={c.id} disableGutters sx={{ py: 0.25, gap: 1 }}>
+                    <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: color, flexShrink: 0 }} />
+                    <ListItemText
+                      primary={name}
+                      primaryTypographyProps={{ variant: "body2", noWrap: true, sx: { flex: 1, minWidth: 0 } }}
+                    />
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<AddIcon />}
+                      href={googleCalSubscribeUrl(c.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      component="a"
+                      sx={{ flexShrink: 0, fontSize: "0.7rem", py: 0.25, px: 1 }}
+                    >
+                      Subscribe
+                    </Button>
+                  </ListItem>
+                );
+              })}
+            </List>
+          </Box>
+        ))
+      )}
+    </Section>
+  );
+}
+
+// ── Family Members ────────────────────────────────────────────────────────────
+
+function FamilyMembers({ currentUser, currentRole }) {
+  const [members,       setMembers]       = useState([]);
+  const [busy,          setBusy]          = useState({});
+  const [error,         setError]         = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [actionMenu,    setActionMenu]    = useState(null);
 
   const load = useCallback(async () => {
     try { const res = await api.get("/api/user-prefs"); setMembers(res.data); } catch {}
@@ -967,52 +1187,162 @@ function FamilyMembers() {
 
   useEffect(() => { load(); }, [load]);
 
+  const setBusyFor = (email, val) => setBusy(p => ({ ...p, [email]: val }));
+
+  const patchRole = async (email, role) => {
+    setBusyFor(email, true);
+    try {
+      await api.patch(`/api/user-prefs/${encodeURIComponent(email)}/role`, {
+        role, requester: currentUser?.email,
+      });
+      setMembers(prev => prev.map(m => m.email === email ? { ...m, role } : m));
+    } catch (e) { setError(e?.response?.data?.detail || "Role change failed."); }
+    finally { setBusyFor(email, false); }
+  };
+
+  const patchBlocked = async (email, blocked) => {
+    setBusyFor(email, true);
+    try {
+      await api.patch(`/api/user-prefs/${encodeURIComponent(email)}/blocked`, {
+        blocked, requester: currentUser?.email,
+      });
+      setMembers(prev => prev.map(m => m.email === email ? { ...m, blocked } : m));
+    } catch (e) { setError(e?.response?.data?.detail || "Action failed."); }
+    finally { setBusyFor(email, false); }
+  };
+
   const handleRemove = async (email) => {
-    setRemoving(email); setError(null);
+    setBusyFor(email, true);
     try {
       await api.delete(`/api/user-prefs/${encodeURIComponent(email)}`);
       if (getStoredUser()?.email === email) clearStoredUser();
       setMembers(prev => prev.filter(m => m.email !== email));
-    } catch { setError(`Could not remove ${email}.`); }
-    finally { setRemoving(null); }
+    } catch (e) { setError(e?.response?.data?.detail || `Could not remove ${email}.`); }
+    finally { setBusyFor(email, false); }
   };
 
-  if (!members.length) return null;
+  const isAdminOrOwner = currentRole === "admin" || currentRole === "owner";
+  const isOwner        = currentRole === "owner";
 
   return (
-    <Section icon={<CalendarMonthIcon />} title="Family Members" defaultExpanded={false}>
+    <Section icon={<CalendarMonthIcon />} title="Family Members">
       <Typography variant="body2" color="text.secondary">
-        Everyone connected to this dashboard. Remove a member to stop showing their events.
+        Everyone connected to this dashboard.
+        {isAdminOrOwner && " Use the menu on each member to manage roles and access."}
       </Typography>
       {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
+      {!members.length && (
+        <Typography variant="body2" color="text.secondary">No family members have signed in yet.</Typography>
+      )}
       <List dense disablePadding sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
-        {members.map(m => (
-          <ListItem key={m.email} disableGutters sx={{ gap: 1.5 }}
-            secondaryAction={
-              <Tooltip title="Remove from dashboard">
-                <IconButton size="small" color="error" disabled={removing === m.email}
-                  onClick={() => handleRemove(m.email)}>
-                  {removing === m.email ? <CircularProgress size={18} /> : <DeleteIcon fontSize="small" />}
-                </IconButton>
-              </Tooltip>
-            }>
-            <Box sx={{ width: 12, height: 12, borderRadius: "50%", bgcolor: m.display_color, flexShrink: 0 }} />
-            <ListItemText
-              primary={m.display_name || m.email}
-              secondary={m.email}
-              primaryTypographyProps={{ variant: "body2", fontWeight: 500 }}
-              secondaryTypographyProps={{ variant: "caption" }}
-            />
-            <Chip size="small"
-              label={m.has_refresh ? "Permanent" : m.has_token ? "Temporary" : "No token"}
-              color={m.has_refresh ? "success" : m.has_token ? "warning" : "default"}
-              variant="outlined" sx={{ mr: 1 }} />
-          </ListItem>
-        ))}
+        {members.map(m => {
+          const isSelf     = m.email === currentUser?.email;
+          const isOwnerTarget = m.role === "owner";
+          const canPromote = isOwner && m.role === "user"  && !m.blocked;
+          const canDemote  = isOwner && m.role === "admin";
+          const canBlock   = isAdminOrOwner && !isOwnerTarget;
+          const canDelete  = isAdminOrOwner && !isOwnerTarget && !isSelf;
+          const hasActions = canPromote || canDemote || canBlock || canDelete;
+          return (
+            <ListItem key={m.email} disableGutters sx={{ gap: 1, py: 0.75, flexWrap: "wrap" }}>
+              <Box sx={{ width: 12, height: 12, borderRadius: "50%", bgcolor: m.display_color, flexShrink: 0 }} />
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap" }}>
+                  <Typography variant="body2" fontWeight={500} sx={{ opacity: m.blocked ? 0.55 : 1 }}>
+                    {m.display_name || m.email}
+                  </Typography>
+                  {m.blocked && (
+                    <Chip size="small" label="blocked" color="error" variant="outlined"
+                      sx={{ height: 18, fontSize: "0.65rem" }} />
+                  )}
+                  {isSelf && (
+                    <Chip size="small" label="you" variant="outlined"
+                      sx={{ height: 18, fontSize: "0.65rem" }} />
+                  )}
+                </Box>
+                <Typography variant="caption" color="text.secondary">{m.email}</Typography>
+              </Box>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexShrink: 0 }}>
+                <Chip size="small"
+                  label={m.role || "user"}
+                  color={m.role === "owner" ? "primary" : m.role === "admin" ? "secondary" : "default"}
+                  variant={m.role === "owner" ? "filled" : m.role === "admin" ? "filled" : "outlined"}
+                  icon={m.role === "admin" || m.role === "owner" ? <AdminPanelSettingsIcon /> : undefined}
+                />
+                <Chip size="small"
+                  label={m.has_refresh ? "Permanent" : m.has_token ? "Temporary" : "No token"}
+                  color={m.has_refresh ? "success" : m.has_token ? "warning" : "default"}
+                  variant="outlined"
+                />
+                {busy[m.email] && <CircularProgress size={18} />}
+                {!busy[m.email] && hasActions && (
+                  <IconButton size="small"
+                    onClick={e => setActionMenu({ anchor: e.currentTarget, member: m })}>
+                    <MoreVertIcon fontSize="small" />
+                  </IconButton>
+                )}
+              </Box>
+            </ListItem>
+          );
+        })}
       </List>
       <Typography variant="caption" color="text.secondary">
-        "Permanent" means the sign-in will auto-renew. "Temporary" means they'll need to sign in again after ~1 hour.
+        "Permanent" = sign-in auto-renews. "Temporary" = re-sign-in needed after ~1 hour.
       </Typography>
+
+      {/* Action menu */}
+      <Menu
+        anchorEl={actionMenu?.anchor}
+        open={!!actionMenu}
+        onClose={() => setActionMenu(null)}
+      >
+        {actionMenu && (() => {
+          const m = actionMenu.member;
+          const canPromote = isOwner && m.role === "user"  && !m.blocked;
+          const canDemote  = isOwner && m.role === "admin";
+          const canBlock   = isAdminOrOwner && m.role !== "owner";
+          const canDelete  = isAdminOrOwner && m.role !== "owner" && m.email !== currentUser?.email;
+          return [
+            canPromote && (
+              <MenuItem key="promote" onClick={() => { patchRole(m.email, "admin"); setActionMenu(null); }}>
+                Promote to Admin
+              </MenuItem>
+            ),
+            canDemote && (
+              <MenuItem key="demote" onClick={() => { patchRole(m.email, "user"); setActionMenu(null); }}>
+                Demote to User
+              </MenuItem>
+            ),
+            canBlock && (
+              <MenuItem key="block" onClick={() => { patchBlocked(m.email, !m.blocked); setActionMenu(null); }}>
+                {m.blocked ? "Unblock" : "Block"}
+              </MenuItem>
+            ),
+            canDelete && (
+              <MenuItem key="remove" sx={{ color: "error.main" }}
+                onClick={() => { setConfirmDialog({ email: m.email, name: m.display_name || m.email }); setActionMenu(null); }}>
+                Remove from Dashboard
+              </MenuItem>
+            ),
+          ].filter(Boolean);
+        })()}
+      </Menu>
+
+      <Dialog open={!!confirmDialog} onClose={() => setConfirmDialog(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Remove {confirmDialog?.name}?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            This removes them from the dashboard. Their Google calendars are not affected.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmDialog(null)}>Cancel</Button>
+          <Button color="error" variant="contained"
+            onClick={() => { handleRemove(confirmDialog.email); setConfirmDialog(null); }}>
+            Remove
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Section>
   );
 }
@@ -1078,15 +1408,21 @@ function WeatherLocation() {
 // ── RSS Feeds ──────────────────────────────────────────────────────────────────
 
 function RssSettings() {
-  const [feeds,  setFeeds]  = useState([{ url: "", label: "" }]);
-  const [saving, setSaving] = useState(false);
-  const [msg,    setMsg]    = useState(null);
-  const [error,  setError]  = useState(null);
+  const [feeds,      setFeeds]      = useState([{ url: "", label: "" }]);
+  const [mode,       setMode]       = useState("shuffle");
+  const [dadJokes,   setDadJokes]   = useState(true);
+  const [hackerNews, setHackerNews] = useState(true);
+  const [saving,     setSaving]     = useState(false);
+  const [msg,        setMsg]        = useState(null);
+  const [error,      setError]      = useState(null);
 
   useEffect(() => {
     api.get("/api/settings/rss").then(res => {
       const loaded = res.data.feeds || [];
       setFeeds(loaded.length > 0 ? loaded : [{ url: "", label: "" }]);
+      setMode(res.data.mode || "shuffle");
+      setDadJokes(res.data.dad_jokes  !== false);
+      setHackerNews(res.data.hacker_news !== false);
     }).catch(() => {});
   }, []);
 
@@ -1099,7 +1435,7 @@ function RssSettings() {
   const handleSave = async () => {
     setSaving(true); setMsg(null); setError(null);
     try {
-      const res = await api.put("/api/settings/rss", { feeds });
+      const res = await api.put("/api/settings/rss", { feeds, mode, dad_jokes: dadJokes, hacker_news: hackerNews });
       setMsg(`Saved ${res.data.count} feed${res.data.count !== 1 ? "s" : ""}.`);
     } catch {
       setError("Failed to save.");
@@ -1112,6 +1448,31 @@ function RssSettings() {
         Headlines rotate in the news ticker at the top of the dashboard.
         The label is optional and appears as a source tag.
       </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+        <Typography variant="body2" color="text.secondary">Display mode:</Typography>
+        <ToggleButtonGroup size="small" exclusive value={mode}
+          onChange={(_, v) => { if (v) setMode(v); }}>
+          <ToggleButton value="shuffle">Shuffle all feeds</ToggleButton>
+          <ToggleButton value="rotate">Rotate feed by feed</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+      <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>Built-in sources:</Typography>
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 360 }}>
+          <Box>
+            <Typography variant="body2" fontWeight={500}>Hacker News</Typography>
+            <Typography variant="caption" color="text.secondary">Top tech &amp; science headlines</Typography>
+          </Box>
+          <Switch checked={hackerNews} onChange={e => setHackerNews(e.target.checked)} size="small" />
+        </Box>
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 360 }}>
+          <Box>
+            <Typography variant="body2" fontWeight={500}>Dad Jokes</Typography>
+            <Typography variant="caption" color="text.secondary">Random jokes via icanhazdadjoke.com</Typography>
+          </Box>
+          <Switch checked={dadJokes} onChange={e => setDadJokes(e.target.checked)} size="small" />
+        </Box>
+      </Box>
       <List disablePadding sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
         {feeds.map((feed, i) => (
           <ListItem key={i} disableGutters disablePadding>
@@ -1155,26 +1516,32 @@ function RssSettings() {
 
 // ── Pi Display ─────────────────────────────────────────────────────────────────
 
-function PiDisplay() {
+function PiDisplay({ currentRole }) {
   const [theme,       setTheme]       = useState("auto");
   const [view,        setView]        = useState("rolling");
   const [weatherView, setWeatherView] = useState("daily");
+  const [fqdn,        setFqdn]        = useState("");
   const [saving,      setSaving]      = useState(false);
   const [msg,         setMsg]         = useState(null);
   const [error,       setError]       = useState(null);
+
+  const isAdminOrOwner = currentRole === "admin" || currentRole === "owner";
 
   useEffect(() => {
     api.get("/api/settings/display").then(res => {
       setTheme(res.data.theme              || "auto");
       setView(res.data.view                || "rolling");
       setWeatherView(res.data.weather_view || "daily");
+      setFqdn(res.data.custom_fqdn         || "");
     }).catch(() => {});
   }, []);
 
   const handleSave = async () => {
     setSaving(true); setMsg(null); setError(null);
     try {
-      await api.put("/api/settings/display", { theme, view, weather_view: weatherView });
+      const body = { theme, view, weather_view: weatherView };
+      if (isAdminOrOwner) body.custom_fqdn = fqdn;
+      await api.put("/api/settings/display", body);
       setMsg("Saved — display updates within 30 seconds.");
     } catch {
       setError("Failed to save.");
@@ -1210,6 +1577,20 @@ function PiDisplay() {
           <ToggleButton value="hourly">Hourly</ToggleButton>
         </ToggleButtonGroup>
       </Box>
+      {isAdminOrOwner && (
+        <>
+          <Divider />
+          <Typography variant="body2" fontWeight={500}>Custom Hostname (FQDN)</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Shown in the dashboard footer. Leave blank to use the auto-detected hostname.
+          </Typography>
+          <TextField
+            label="Custom FQDN" size="small" fullWidth
+            value={fqdn} onChange={e => setFqdn(e.target.value)}
+            placeholder="dashboard.yourdomain.com"
+          />
+        </>
+      )}
       {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
       <Box>
@@ -1270,30 +1651,500 @@ function RestartServices() {
   );
 }
 
+// ── OAuth Credentials (owner-only) ────────────────────────────────────────────
+
+function OAuthSettings() {
+  const [clientId,     setClientId]     = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [showSecret,   setShowSecret]   = useState(false);
+  const [saving,       setSaving]       = useState(false);
+  const [msg,          setMsg]          = useState(null);
+  const [error,        setError]        = useState(null);
+  const MASKED = "••••••••";
+
+  useEffect(() => {
+    api.get("/api/settings/oauth").then(res => {
+      setClientId(res.data.client_id || "");
+      setClientSecret(res.data.configured ? MASKED : "");
+    }).catch(() => {});
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true); setMsg(null); setError(null);
+    try {
+      await api.put("/api/settings/oauth", { client_id: clientId, client_secret: clientSecret });
+      setMsg("Saved. Restart the backend for changes to take effect.");
+      if (clientSecret && clientSecret !== MASKED) setClientSecret(MASKED);
+    } catch { setError("Failed to save."); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Section icon={<LockIcon />} title="OAuth / Google Credentials">
+      <Typography variant="body2" color="text.secondary">
+        Found in <strong>Google Cloud Console → APIs &amp; Services → Credentials</strong>.
+        Required for family members to sign in. This is a one-time setup.
+      </Typography>
+      <TextField
+        label="Client ID" size="small" fullWidth
+        value={clientId} onChange={e => setClientId(e.target.value)}
+        placeholder="xxxxxxxxxxxx-xxxxxxxx.apps.googleusercontent.com"
+      />
+      <TextField
+        label="Client Secret" size="small" fullWidth
+        type={showSecret ? "text" : "password"}
+        value={clientSecret} onChange={e => setClientSecret(e.target.value)}
+        placeholder="GOCSPX-xxxxxxxxxxxxxxxxxxxx"
+        InputProps={{
+          endAdornment: (
+            <InputAdornment position="end">
+              <Tooltip title={showSecret ? "Hide" : "Show"}>
+                <IconButton size="small" onClick={() => setShowSecret(v => !v)}>
+                  {showSecret ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+            </InputAdornment>
+          ),
+        }}
+      />
+      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+      <Box>
+        <Button variant="contained"
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+          onClick={handleSave} disabled={saving || !clientId.trim() || !clientSecret.trim()}>
+          Save Credentials
+        </Button>
+      </Box>
+    </Section>
+  );
+}
+
+// ── Backup & Restore (owner-only) ──────────────────────────────────────────────
+
+function BackupSection() {
+  const [restoring,   setRestoring]   = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingData, setPendingData] = useState(null);
+  const [msg,         setMsg]         = useState(null);
+  const [error,       setError]       = useState(null);
+  const fileRef = useRef(null);
+
+  const handleDownload = async () => {
+    try {
+      const res = await api.get("/api/setup/backup", { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a   = document.createElement("a");
+      a.href     = url;
+      a.download = `dashboard-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch { setError("Failed to download backup."); }
+  };
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (fileRef.current) fileRef.current.value = "";
+    try {
+      const data = JSON.parse(await file.text());
+      if (data.version !== 1) throw new Error("Unsupported backup version.");
+      setPendingData(data);
+      setConfirmOpen(true);
+    } catch (err) { setError(err.message || "Invalid backup file."); }
+  };
+
+  const handleConfirmRestore = async () => {
+    setConfirmOpen(false);
+    setRestoring(true); setMsg(null); setError(null);
+    try {
+      await api.post("/api/setup/restore", pendingData);
+      setMsg("Restored — reload the page for all changes to take effect.");
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Restore failed.");
+    } finally { setRestoring(false); setPendingData(null); }
+  };
+
+  const backupDate = pendingData?.created_at
+    ? new Date(pendingData.created_at).toLocaleString() : "";
+
+  return (
+    <Section icon={<BackupIcon />} title="Backup & Restore">
+      <Typography variant="body2" color="text.secondary">
+        Back up all settings, users, calendars, and OAuth credentials to a JSON file.
+        Use it to restore after a reset or migrate to a new Pi.
+      </Typography>
+      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+      <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+        <Button variant="contained" startIcon={<DownloadIcon />} onClick={handleDownload}>
+          Download Backup
+        </Button>
+        <Button variant="outlined" component="label"
+          startIcon={restoring ? <CircularProgress size={16} color="inherit" /> : <UploadIcon />}
+          disabled={restoring}>
+          Restore from Backup
+          <input ref={fileRef} type="file" accept=".json" hidden onChange={handleFileChange} />
+        </Button>
+      </Box>
+
+      <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)}>
+        <DialogTitle>Restore this backup?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            {backupDate && <><strong>{backupDate}</strong><br /><br /></>}
+            This will <strong>overwrite all current settings, users, and calendars</strong>.
+            This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmOpen(false)}>Cancel</Button>
+          <Button color="warning" variant="contained" onClick={handleConfirmRestore}>Restore</Button>
+        </DialogActions>
+      </Dialog>
+    </Section>
+  );
+}
+
+// ── Reset Install (owner-only) ─────────────────────────────────────────────────
+
+function ResetSection() {
+  const [open,    setOpen]    = useState(false);
+  const [busy,    setBusy]    = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [error,   setError]   = useState(null);
+
+  const handleReset = async () => {
+    setBusy(true); setError(null);
+    try {
+      await api.post("/api/setup/reset");
+      setSuccess(true);
+    } catch { setError("Reset failed — try again."); }
+    finally { setBusy(false); setOpen(false); }
+  };
+
+  return (
+    <Section icon={<RestartAltIcon />} title="Reset Install">
+      <Typography variant="body2" color="text.secondary">
+        Removes all signed-in users and RSS feeds. OAuth and weather credentials are kept.
+        Use this to hand the dashboard to a new family or start fresh.
+      </Typography>
+      {success && <Alert severity="success" onClose={() => setSuccess(false)}>Reset complete — all users and RSS feeds removed.</Alert>}
+      {error   && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+      <Box>
+        <Button variant="outlined" color="error" startIcon={<RestartAltIcon />} onClick={() => setOpen(true)}>
+          Reset Install
+        </Button>
+      </Box>
+      <Dialog open={open} onClose={() => !busy && setOpen(false)}>
+        <DialogTitle>Reset this install?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            This removes <strong>all signed-in users</strong> and <strong>all RSS feeds</strong>.
+            OAuth and weather credentials are kept. This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpen(false)} disabled={busy}>Cancel</Button>
+          <Button color="error" variant="contained" onClick={handleReset} disabled={busy}
+            startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <RestartAltIcon />}>
+            {busy ? "Resetting…" : "Reset"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Section>
+  );
+}
+
+// ── Permissions ────────────────────────────────────────────────────────────────
+
+const SECTION_LABELS = {
+  weather_location: "Weather Location",
+  pi_display:       "Pi Display Controls",
+  add_calendar:     "Add Calendar by URL",
+  family_calendars: "Family Calendars",
+  family_members:   "Family Members",
+  rss_feeds:        "RSS News Feeds",
+  restart_services: "Restart Services",
+};
+
+function PermissionsSettings({ currentRole }) {
+  const [sections,   setSections]   = useState([]);
+  const [adminPerms, setAdminPerms] = useState([]);
+  const [userPerms,  setUserPerms]  = useState([]);
+  const [saving,     setSaving]     = useState(false);
+  const [msg,        setMsg]        = useState(null);
+  const [error,      setError]      = useState(null);
+
+  useEffect(() => {
+    api.get("/api/settings/permissions").then(res => {
+      setSections(res.data.sections || []);
+      setAdminPerms(res.data.admin  || []);
+      setUserPerms(res.data.user    || []);
+    }).catch(() => {});
+  }, []);
+
+  const toggleAdmin = s =>
+    setAdminPerms(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
+  const toggleUser = s =>
+    setUserPerms(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
+
+  const handleSave = async () => {
+    setSaving(true); setMsg(null); setError(null);
+    try {
+      const body = currentRole === "owner"
+        ? { admin: adminPerms, user: userPerms }
+        : { user: userPerms };
+      await api.put("/api/settings/permissions", body);
+      setMsg("Permissions saved.");
+    } catch { setError("Failed to save."); }
+    finally { setSaving(false); }
+  };
+
+  // Admin can only configure user access to sections they themselves can see
+  const userConfigSections = currentRole === "owner"
+    ? sections
+    : sections.filter(s => adminPerms.includes(s));
+
+  return (
+    <Section icon={<SecurityIcon />} title="Permissions" defaultExpanded={false}>
+      <Typography variant="body2" color="text.secondary">
+        Control which settings sections are visible to each role.
+        My Account is always visible to everyone.
+      </Typography>
+      <Box sx={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        {currentRole === "owner" && (
+          <Box sx={{ flex: 1, minWidth: 180 }}>
+            <Typography variant="body2" fontWeight={600} gutterBottom>Admin can see</Typography>
+            {sections.map(s => (
+              <Box key={s} sx={{ display: "flex", alignItems: "center" }}>
+                <FormControlLabel
+                  control={<Checkbox size="small" checked={adminPerms.includes(s)} onChange={() => toggleAdmin(s)} />}
+                  label={<Typography variant="body2">{SECTION_LABELS[s] || s}</Typography>}
+                />
+              </Box>
+            ))}
+          </Box>
+        )}
+        <Box sx={{ flex: 1, minWidth: 180 }}>
+          <Typography variant="body2" fontWeight={600} gutterBottom>User can see</Typography>
+          {userConfigSections.map(s => (
+            <Box key={s} sx={{ display: "flex", alignItems: "center" }}>
+              <FormControlLabel
+                control={<Checkbox size="small" checked={userPerms.includes(s)} onChange={() => toggleUser(s)} />}
+                label={<Typography variant="body2">{SECTION_LABELS[s] || s}</Typography>}
+              />
+            </Box>
+          ))}
+          {userConfigSections.length === 0 && (
+            <Typography variant="body2" color="text.secondary">
+              No sections available to configure.
+            </Typography>
+          )}
+        </Box>
+      </Box>
+      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+      <Box>
+        <Button variant="contained"
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+          onClick={handleSave} disabled={saving}>
+          Save Permissions
+        </Button>
+      </Box>
+    </Section>
+  );
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────
+
+// ── Sidebar nav button ─────────────────────────────────────────────────────────
+
+function NavItem({ icon, label, selected, onClick }) {
+  return (
+    <Box
+      component="button"
+      onClick={onClick}
+      sx={{
+        display: "flex", alignItems: "center", gap: 1.5,
+        width: "100%", px: 2.5, py: 1.1,
+        border: "none", background: "none", cursor: "pointer",
+        textAlign: "left", fontFamily: "inherit",
+        fontSize: "0.875rem",
+        fontWeight: selected ? 600 : 400,
+        color: selected ? "primary.main" : "text.secondary",
+        bgcolor: selected ? "action.selected" : "transparent",
+        borderRight: "3px solid",
+        borderColor: selected ? "primary.main" : "transparent",
+        "&:hover": { bgcolor: selected ? "action.selected" : "action.hover" },
+        transition: "background-color 0.15s",
+      }}
+    >
+      <Box sx={{ display: "flex", flexShrink: 0 }}>{icon}</Box>
+      {label}
+    </Box>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function Settings() {
   const navigate = useNavigate();
+  const [currentUser,     setCurrentUser]     = useState(getStoredUser);
+  const [currentRole,     setCurrentRole]     = useState(getStoredRole);
+  const [permissions,     setPermissions]     = useState({ admin: [], user: ["family_calendars"] });
+  const [oauthConfigured, setOauthConfigured] = useState(true);
+  const [tab,             setTab]             = useState("my_account");
+
+  // Refresh role from server on load
+  useEffect(() => {
+    const user = getStoredUser();
+    if (!user?.email) return;
+    api.get(`/api/user-prefs/${encodeURIComponent(user.email)}`)
+      .then(res => { const r = res.data.role || "user"; setCurrentRole(r); storeRole(r); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    api.get("/api/settings/permissions").then(res => {
+      setPermissions({ admin: res.data.admin || [], user: res.data.user || [] });
+    }).catch(() => {});
+    api.get("/api/settings/oauth").then(res => {
+      setOauthConfigured(!!res.data.configured);
+    }).catch(() => {});
+  }, []);
+
+  const handleSignIn = useCallback(({ email, name, picture, role }) => {
+    const u = { email, name, picture };
+    setCurrentUser(u); storeUser(u);
+    setCurrentRole(role || "user"); storeRole(role || "user");
+  }, []);
+
+  const handleSignOut = useCallback(() => {
+    setCurrentUser(null); clearStoredUser();
+    setCurrentRole("user"); clearStoredRole();
+  }, []);
+
+  const canSee = useCallback((section) => {
+    if (currentRole === "owner") return true;
+    if (currentRole === "admin") return permissions.admin.includes(section);
+    return permissions.user.includes(section);
+  }, [currentRole, permissions]);
+
+  const isOwner        = currentRole === "owner";
+  const isAdminOrOwner = currentRole === "admin" || currentRole === "owner";
+
+  const { userTabs, adminTabs } = useMemo(() => {
+    const user = [
+      { value: "my_account",       label: "My Account",       icon: <AccountCircleIcon fontSize="small" /> },
+      canSee("weather_location") && { value: "weather_location", label: "Weather",          icon: <CloudIcon fontSize="small" /> },
+      canSee("pi_display")       && { value: "pi_display",       label: "Pi Display",       icon: <TvIcon fontSize="small" /> },
+      canSee("family_calendars") && { value: "family_calendars", label: "Family Calendars", icon: <GroupAddIcon fontSize="small" /> },
+      canSee("family_members")   && { value: "family_members",   label: "Family Members",   icon: <CalendarMonthIcon fontSize="small" /> },
+      canSee("rss_feeds")        && { value: "rss_feeds",        label: "RSS Feeds",        icon: <RssFeedIcon fontSize="small" /> },
+      canSee("restart_services") && { value: "restart_services", label: "Restart",          icon: <ReplayIcon fontSize="small" /> },
+    ].filter(Boolean);
+
+    const admin = [
+      isAdminOrOwner                  && { value: "permissions", label: "Permissions",     icon: <SecurityIcon fontSize="small" /> },
+      (isOwner || !oauthConfigured)   && { value: "oauth",       label: "OAuth / Google",  icon: <LockIcon fontSize="small" /> },
+      isOwner                         && { value: "backup",      label: "Backup & Restore", icon: <BackupIcon fontSize="small" /> },
+      isOwner                         && { value: "reset",       label: "Reset Install",   icon: <RestartAltIcon fontSize="small" /> },
+    ].filter(Boolean);
+
+    return { userTabs: user, adminTabs: admin };
+  }, [canSee, isAdminOrOwner, isOwner, oauthConfigured]);
+
+  const renderContent = () => {
+    switch (tab) {
+      case "my_account":       return <MyAccount onSignIn={handleSignIn} onSignOut={handleSignOut} />;
+      case "weather_location": return <WeatherLocation />;
+      case "pi_display":       return <PiDisplay currentRole={currentRole} />;
+      case "family_calendars": return <FamilyCalendars />;
+      case "family_members":   return <FamilyMembers currentUser={currentUser} currentRole={currentRole} />;
+      case "rss_feeds":        return <RssSettings />;
+      case "restart_services": return <RestartServices />;
+      case "permissions":      return <PermissionsSettings currentRole={currentRole} />;
+      case "oauth":            return <OAuthSettings />;
+      case "backup":           return <BackupSection />;
+      case "reset":            return <ResetSection />;
+      default:                 return null;
+    }
+  };
 
   return (
-    <Box sx={{ minHeight: "100vh", bgcolor: "grey.100", py: 4, px: 3 }}>
-      <Box sx={{ maxWidth: 680, mx: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+    <Box sx={{ display: "flex", flexDirection: "column", height: "100vh", bgcolor: "grey.100" }}>
+      {/* Top bar */}
+      <Box sx={{
+        flexShrink: 0, bgcolor: "background.paper",
+        borderBottom: "1px solid", borderColor: "divider",
+        px: 3, py: 1.5,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <Typography variant="h5" fontWeight={700}>Settings</Typography>
+        <Button size="small" variant="outlined" startIcon={<DashboardIcon />} onClick={() => navigate("/")}>
+          Back to Dashboard
+        </Button>
+      </Box>
 
-        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
-          <Typography variant="h4" fontWeight={700}>Settings</Typography>
-          <Button variant="outlined" startIcon={<DashboardIcon />} onClick={() => navigate("/")}>
-            Back to Dashboard
-          </Button>
+      {/* Body */}
+      <Box sx={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* Left sidebar nav */}
+        <Box sx={{
+          width: 220, flexShrink: 0,
+          bgcolor: "background.paper",
+          borderRight: "1px solid", borderColor: "divider",
+          display: "flex", flexDirection: "column",
+          overflow: "hidden",
+        }}>
+          {/* Scrollable nav items */}
+          <Box sx={{ flex: 1, overflowY: "auto", py: 1 }}>
+            {userTabs.map(t => (
+              <NavItem key={t.value} icon={t.icon} label={t.label}
+                selected={tab === t.value} onClick={() => setTab(t.value)} />
+            ))}
+
+            {adminTabs.length > 0 && (
+              <>
+                <Divider sx={{ my: 1 }} />
+                <Typography variant="overline" sx={{
+                  px: 2.5, display: "block", color: "text.disabled",
+                  fontSize: "0.65rem", letterSpacing: "0.08em", lineHeight: 2,
+                }}>
+                  Administration
+                </Typography>
+                {adminTabs.map(t => (
+                  <NavItem key={t.value} icon={t.icon} label={t.label}
+                    selected={tab === t.value} onClick={() => setTab(t.value)} />
+                ))}
+              </>
+            )}
+          </Box>
+
+          {/* Pinned bottom button */}
+          <Box sx={{ p: 1.5, borderTop: "1px solid", borderColor: "divider" }}>
+            <Button
+              fullWidth
+              variant="outlined"
+              size="small"
+              endIcon={<OpenInNewIcon fontSize="small" />}
+              component="a"
+              href="https://calendar.google.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              sx={{ textTransform: "none", justifyContent: "space-between" }}
+            >
+              Manage Calendars
+            </Button>
+          </Box>
         </Box>
 
-        <MyAccount />
-        <WeatherLocation />
-        <PiDisplay />
-        <AddCalendar />
-        <FamilyMembers />
-        <RssSettings />
-        <RestartServices />
-
+        {/* Content pane */}
+        <Box sx={{ flex: 1, overflowY: "auto", p: 3 }}>
+          <Box sx={{ maxWidth: 680 }}>
+            {renderContent()}
+          </Box>
+        </Box>
       </Box>
     </Box>
   );

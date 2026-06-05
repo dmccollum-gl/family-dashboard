@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Box, Typography, Paper, Chip, IconButton, CircularProgress,
   Tooltip, ToggleButtonGroup, ToggleButton, Button,
@@ -264,11 +264,38 @@ function WeatherWidget() {
 
 // ── News ticker ────────────────────────────────────────────────────────────────
 
+// Round-robin interleave: [A1,B1,C1, A2,B2,C2, ...]  — never two from the same feed in a row
+function interleaveGroups(groups) {
+  const result = [];
+  const max = Math.max(...groups.map(g => g.length));
+  for (let i = 0; i < max; i++)
+    for (const g of groups)
+      if (i < g.length) result.push(g[i]);
+  return result;
+}
+
 function NewsWidget() {
   const [items,   setItems]   = useState([]);
   const [errors,  setErrors]  = useState([]);
+  const [mode,    setMode]    = useState("shuffle");
   const [idx,     setIdx]     = useState(0);
   const [visible, setVisible] = useState(true);
+
+  const groups = useMemo(() => {
+    const map = {};
+    for (const item of items) {
+      const key = item.source || "";
+      if (!map[key]) map[key] = [];
+      map[key].push(item);
+    }
+    return Object.values(map).filter(g => g.length > 0);
+  }, [items]);
+
+  // Pre-build ordered display list so cycling is always a single index
+  const displayItems = useMemo(() => {
+    if (groups.length === 0) return items;
+    return mode === "shuffle" ? interleaveGroups(groups) : groups.flat();
+  }, [groups, mode, items]);
 
   const load = useCallback(() => {
     api.get("/api/rss/feed")
@@ -277,19 +304,27 @@ function NewsWidget() {
   }, []);
 
   useEffect(() => {
+    api.get("/api/settings/rss")
+      .then(res => setMode(res.data.mode || "shuffle"))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     load();
     const id = setInterval(load, 15 * 60 * 1000);
     return () => clearInterval(id);
   }, [load]);
 
+  useEffect(() => { setIdx(0); }, [displayItems]);
+
   useEffect(() => {
-    if (items.length === 0) return;
+    if (displayItems.length === 0) return;
     const id = setInterval(() => {
       setVisible(false);
-      setTimeout(() => { setIdx(i => (i + 1) % items.length); setVisible(true); }, 400);
+      setTimeout(() => { setIdx(i => (i + 1) % displayItems.length); setVisible(true); }, 400);
     }, 7000);
     return () => clearInterval(id);
-  }, [items.length]);
+  }, [displayItems.length]);
 
   if (items.length === 0) {
     if (errors.length > 0) {
@@ -304,12 +339,20 @@ function NewsWidget() {
     return <Box sx={{ flexGrow: 1 }} />;
   }
 
-  const item = items[idx];
+  const item = displayItems[idx] ?? displayItems[0];
+  if (!item) return <Box sx={{ flexGrow: 1 }} />;
+
   return (
     <Box sx={{ flexGrow: 1, overflow: "hidden", display: "flex", alignItems: "flex-start", justifyContent: "center", gap: 1, px: 1 }}>
       {item.source && (
-        <Chip label={item.source} size="small" color="primary" variant="outlined"
-          sx={{ flexShrink: 0, fontSize: "0.7rem", height: 20, mt: "4px" }} />
+        <Box component="span" sx={{
+          flexShrink: 0, whiteSpace: "nowrap", mt: "7px",
+          fontSize: "0.45rem", color: "primary.main",
+          border: "1px solid currentColor", borderRadius: "3px",
+          px: "3px", lineHeight: "12px", opacity: 0.85,
+        }}>
+          {item.source}
+        </Box>
       )}
       <Typography
         onClick={() => item.link && window.open(item.link, "_blank")}
@@ -317,7 +360,7 @@ function NewsWidget() {
           opacity: visible ? 1 : 0,
           transition: "opacity 0.35s ease",
           fontWeight: 500,
-          fontSize: "1.55rem",
+          fontSize: "1.085rem",
           lineHeight: 1.35,
           display: "-webkit-box",
           WebkitLineClamp: 2,
@@ -520,9 +563,25 @@ function CalendarGrid({ view, baseDate }) {
 
               {/* Day columns */}
               {days.map((day, i) => {
+                const isToday  = day.getTime() === today.getTime();
                 const timedEvs = layoutTimedEvents(eventsForDay(day).filter(ev => !ev.allDay));
                 return (
                   <Box key={i} sx={{ flex: 1, position: "relative", zIndex: 1 }}>
+                    {/* Current time line — scoped to today's column only */}
+                    {isToday && nowH >= GRID_START && nowH <= GRID_END && (
+                      <Box sx={{
+                        position: "absolute",
+                        top: `${toGridPct(now)}%`,
+                        left: 0, right: 0, height: "2px",
+                        bgcolor: "error.main", zIndex: 10, pointerEvents: "none",
+                      }}>
+                        <Box sx={{
+                          position: "absolute", left: -4, top: "50%",
+                          transform: "translateY(-50%)",
+                          width: 8, height: 8, borderRadius: "50%", bgcolor: "error.main",
+                        }} />
+                      </Box>
+                    )}
                     {timedEvs.map(ev => {
                       const topPct   = toGridPct(ev.start);
                       const clampS   = Math.max(ev.start.getHours() + ev.start.getMinutes() / 60, GRID_START);
@@ -563,21 +622,6 @@ function CalendarGrid({ view, baseDate }) {
                 );
               })}
 
-              {/* Current time line */}
-              {todayInRange && nowH >= GRID_START && nowH <= GRID_END && (
-                <Box sx={{
-                  position: "absolute",
-                  top: `${toGridPct(now)}%`,
-                  left: 0, right: 0, height: "2px",
-                  bgcolor: "error.main", zIndex: 10, pointerEvents: "none",
-                }}>
-                  <Box sx={{
-                    position: "absolute", left: -4, top: "50%",
-                    transform: "translateY(-50%)",
-                    width: 8, height: 8, borderRadius: "50%", bgcolor: "error.main",
-                  }} />
-                </Box>
-              )}
             </Box>
           </Box>
         </>
@@ -658,26 +702,31 @@ function CalendarGrid({ view, baseDate }) {
 
 function Footer({ view, baseDate, setView, setBaseDate }) {
   const { toggle, mode } = useColorMode();
-  const navigate         = useNavigate();
   const [info, setInfo]  = useState(null);
 
   useEffect(() => {
+    // One-time fetch for IP / FQDN + initial CPU/RAM snapshot.
     api.get("/api/system").then(res => setInfo(res.data)).catch(() => {});
+
+    // SSE stream pushes CPU/RAM every 500 ms — no polling overhead.
+    const es = new EventSource("/api/system/live");
+    es.onmessage = e => {
+      try {
+        const d = JSON.parse(e.data);
+        setInfo(prev => prev ? { ...prev, ...d } : d);
+      } catch {}
+    };
+    return () => es.close();
   }, []);
 
   return (
     <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", px: 1, flexShrink: 0, gap: 1 }}>
 
-      {/* Left: IP + FQDN */}
-      <Box sx={{ display: "flex", gap: 2, flex: 1 }}>
-        {info?.ip && (
+      {/* Left: FQDN (ip) */}
+      <Box sx={{ flex: 1 }}>
+        {info?.fqdn && (
           <Typography variant="caption" color="text.disabled" sx={{ fontFamily: "monospace" }}>
-            {info.ip}
-          </Typography>
-        )}
-        {info?.fqdn && info.fqdn !== info.ip && (
-          <Typography variant="caption" color="text.disabled" sx={{ fontFamily: "monospace" }}>
-            {info.fqdn}
+            {info.fqdn}{info?.ip ? ` (${info.ip})` : ""}
           </Typography>
         )}
       </Box>
@@ -713,18 +762,23 @@ function Footer({ view, baseDate, setView, setBaseDate }) {
         </Button>
       </Box>
 
-      {/* Right: theme toggle + admin */}
-      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flex: 1, justifyContent: "flex-end" }}>
+      {/* Right: CPU/RAM + theme toggle */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flex: 1, justifyContent: "flex-end" }}>
+        {info?.cpu != null && (
+          <Typography variant="caption" sx={{ fontFamily: "monospace", color: info.cpu >= 80 ? "error.main" : info.cpu >= 50 ? "warning.main" : "text.disabled" }}>
+            CPU {info.cpu}%
+          </Typography>
+        )}
+        {info?.ram != null && (
+          <Typography variant="caption" sx={{ fontFamily: "monospace", color: info.ram.pct >= 85 ? "error.main" : info.ram.pct >= 65 ? "warning.main" : "text.disabled" }}>
+            RAM {info.ram.used}/{info.ram.total} MB
+          </Typography>
+        )}
         <Tooltip title={mode === "light" ? "Switch to dark" : mode === "dark" ? "Switch to auto (sunrise/sunset)" : "Switch to light"}>
           <IconButton size="small" onClick={toggle} sx={{ color: "text.disabled" }}>
             {mode === "light" ? <DarkModeIcon fontSize="small" /> : mode === "dark" ? <BrightnessAutoIcon fontSize="small" /> : <LightModeIcon fontSize="small" />}
           </IconButton>
         </Tooltip>
-        <Button size="small" variant="text"
-          sx={{ py: 0.25, px: 1, fontSize: "0.7rem", minWidth: 0, color: "text.disabled" }}
-          onClick={() => navigate("/admin")}>
-          Admin
-        </Button>
       </Box>
     </Box>
   );

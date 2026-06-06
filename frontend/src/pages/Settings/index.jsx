@@ -1573,108 +1573,161 @@ function OAuthSettings() {
         </Button>
       </Box>
 
-      {/* ── Setup Help ─────────────────────────────────────────────────────────── */}
+      {/* ── Google Cloud Setup Guide ─────────────────────────────────────────── */}
       <Divider sx={{ mt: 1 }} />
       <Typography variant="body2" fontWeight={600} gutterBottom>
-        How to get a URL Google will accept
+        How to set up Google OAuth — step by step
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Google OAuth requires a proper FQDN (domain name) — raw IP addresses are not accepted as
-        Authorized JavaScript Origins. Pick the option that fits your setup:
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Create a free Google Cloud project, enable the Calendar API, and generate the Client ID and
+        Secret above. This is a one-time process that takes about 10 minutes.
       </Typography>
 
-      {/* Option 1 — Tailscale */}
-      <Accordion disableGutters elevation={0} sx={{
-        border: "1px solid", borderColor: "divider", mb: 1, borderRadius: "6px !important",
-        "&:before": { display: "none" },
-      }}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 44, "& .MuiAccordionSummary-content": { my: 0.75 } }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <Chip size="small" label="Free" color="success" sx={{ fontSize: "0.65rem", height: 18 }} />
-            <Typography variant="body2" fontWeight={600}>Option 1 — Tailscale (no custom domain needed)</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails sx={{ pt: 0, pb: 2 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.25 }}>
-            Tailscale gives every device a stable <strong>machine.tail-xxxxx.ts.net</strong> HTTPS hostname
-            at no cost — no port-forwarding or firewall changes required.
-          </Typography>
-          <Box component="ol" sx={{ m: 0, pl: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
-            {[
-              { text: "SSH into your Pi and install Tailscale:", code: "curl -fsSL https://tailscale.com/install.sh | sh" },
-              { text: "Authenticate (opens a URL in the console):", code: "sudo tailscale up" },
-              { text: "Follow the URL printed to the terminal and sign in — Tailscale accounts are free at tailscale.com." },
-              { text: "Open tailscale.com/admin/machines and find your Pi. Copy its MagicDNS hostname — it looks like:", code: "pi-name.tail-xxxxx.ts.net" },
-              { text: "In Google Cloud Console → APIs & Services → Credentials, edit your OAuth 2.0 client. Under Authorized JavaScript origins, click Add URI and enter:", code: "https://pi-name.tail-xxxxx.ts.net" },
-              { text: "Click Save. Google takes a few minutes to propagate." },
-              { text: "In Settings → Pi Display → Custom FQDN, enter:", code: "pi-name.tail-xxxxx.ts.net" },
-              { text: "Sign in to the dashboard via Tailscale at:", code: "https://pi-name.tail-xxxxx.ts.net/settings" },
-            ].map((item, i) => (
-              <Box component="li" key={i}>
-                <Typography variant="body2">{item.text}</Typography>
-                {item.code && (
-                  <Typography variant="body2" sx={{
-                    fontFamily: "monospace", bgcolor: "action.hover",
-                    px: 1, py: 0.25, borderRadius: 0.5, mt: 0.5,
-                    wordBreak: "break-all", fontSize: "0.78rem",
-                  }}>
-                    {item.code}
-                  </Typography>
-                )}
+      {[
+        {
+          n: 1,
+          title: "Create a Google Cloud Project",
+          href: "https://console.cloud.google.com/projectcreate",
+          btnLabel: "Create a New Project",
+          content: (
+            <Typography variant="body2" color="text.secondary">
+              Go to the Google Cloud Console and create a new project (or select an existing one from
+              the top-left dropdown). Name it anything — e.g. <em>Family Dashboard</em>.
+            </Typography>
+          ),
+        },
+        {
+          n: 2,
+          title: "Enable the Google Calendar API",
+          href: "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com",
+          btnLabel: "Enable Calendar API",
+          content: (
+            <Typography variant="body2" color="text.secondary">
+              Inside your project, go to <strong>APIs &amp; Services → Library</strong>. Search for
+              &ldquo;Google Calendar API&rdquo; and click <strong>Enable</strong>.
+            </Typography>
+          ),
+        },
+        {
+          n: 3,
+          title: "Configure the OAuth Consent Screen",
+          href: "https://console.cloud.google.com/apis/credentials/consent",
+          btnLabel: "OAuth Consent Screen",
+          content: (
+            <Typography variant="body2" color="text.secondary">
+              Go to <strong>APIs &amp; Services → OAuth consent screen</strong>. Select{" "}
+              <strong>External</strong> user type (required for personal Gmail accounts). Fill in:
+              App name (<em>Family Dashboard</em>), user support email, and developer contact email.
+              Click <strong>Save and Continue</strong> to reach the Scopes step.
+            </Typography>
+          ),
+        },
+        {
+          n: 4,
+          title: "Add Required Scopes",
+          href: null,
+          content: (
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.75 }}>
+                On the Scopes step click <strong>Add or Remove Scopes</strong>. Search for and enable
+                all four, then click <strong>Update → Save and Continue</strong>:
+              </Typography>
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 0.4, mb: 0.75 }}>
+                {[
+                  ["openid",               "OpenID Connect authentication"],
+                  [".../userinfo.email",   "Read the user's email address"],
+                  [".../userinfo.profile", "Read the user's public profile"],
+                  [".../auth/calendar",    "Full Calendar access — read events & manage subscriptions"],
+                ].map(([s, d]) => (
+                  <Box key={s} sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+                    <Typography sx={{
+                      fontFamily: "monospace", bgcolor: "action.hover",
+                      px: 0.75, py: 0.1, borderRadius: 0.5, fontSize: "0.73rem", flexShrink: 0,
+                    }}>
+                      {s}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">{d}</Typography>
+                  </Box>
+                ))}
               </Box>
-            ))}
-          </Box>
-        </AccordionDetails>
-      </Accordion>
-
-      {/* Option 2 — Cloudflare Tunnel */}
-      <Accordion disableGutters elevation={0} sx={{
-        border: "1px solid", borderColor: "divider", borderRadius: "6px !important",
-        "&:before": { display: "none" },
-      }}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 44, "& .MuiAccordionSummary-content": { my: 0.75 } }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <Chip size="small" label="Custom domain" color="info" sx={{ fontSize: "0.65rem", height: 18 }} />
-            <Typography variant="body2" fontWeight={600}>Option 2 — Cloudflare Tunnel (requires a domain on Cloudflare)</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails sx={{ pt: 0, pb: 2 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.25 }}>
-            <strong>cloudflared is pre-installed</strong> on this Pi. Connecting it to Cloudflare exposes
-            the dashboard at a custom subdomain with automatic HTTPS — no port-forwarding needed.
-            See <strong>Settings → Cloudflare Tunnel</strong> to save your token and control the service.
-          </Typography>
-          <Box component="ol" sx={{ m: 0, pl: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
-            {[
-              { text: "In your Cloudflare dashboard → Zero Trust → Networks → Tunnels → Create a tunnel. Choose Cloudflared, give it a name, then copy the tunnel token." },
-              { text: "Go to Settings → Cloudflare Tunnel (in the sidebar), paste the token, click Save Token, then Start Tunnel." },
-              { text: "Back in Cloudflare → your tunnel → Public Hostname → Add a hostname:", code: "Subdomain: dashboard  (or your choice)\nDomain: yourdomain.com\nService: HTTP  →  localhost:80" },
-              { text: "In Google Cloud Console → Credentials, edit your OAuth client. Under Authorized JavaScript origins, add:", code: "https://dashboard.yourdomain.com" },
-              { text: "Click Save. Google takes a few minutes to propagate." },
-              { text: "In Settings → Pi Display → Custom FQDN, enter:", code: "dashboard.yourdomain.com" },
-              { text: "Sign in to the dashboard via Cloudflare at:", code: "https://dashboard.yourdomain.com/settings" },
-            ].map((item, i) => (
-              <Box component="li" key={i}>
-                <Typography variant="body2">{item.text}</Typography>
-                {item.code && (
-                  <Typography variant="body2" sx={{
-                    fontFamily: "monospace", bgcolor: "action.hover",
-                    px: 1, py: 0.25, borderRadius: 0.5, mt: 0.5,
-                    whiteSpace: "pre-wrap", fontSize: "0.78rem",
-                  }}>
-                    {item.code}
-                  </Typography>
-                )}
+            </Box>
+          ),
+        },
+        {
+          n: 5,
+          title: "Add Test Users",
+          href: "https://console.cloud.google.com/apis/credentials/consent",
+          btnLabel: "OAuth Consent Screen",
+          content: (
+            <Typography variant="body2" color="text.secondary">
+              On the <strong>Test Users</strong> step click <strong>+ Add Users</strong> and enter each
+              family member&rsquo;s Gmail address. Only listed users can sign in while the app is in
+              Testing mode. Alternatively, finish the wizard and then click <strong>Publish App</strong>
+              on the consent screen — the app remains unverified but works perfectly for personal use.
+            </Typography>
+          ),
+        },
+        {
+          n: 6,
+          title: "Create OAuth 2.0 Credentials",
+          href: "https://console.cloud.google.com/apis/credentials",
+          btnLabel: "Credentials Page",
+          content: (
+            <Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                Go to <strong>Credentials → + Create Credentials → OAuth 2.0 Client ID</strong>. Set:
+              </Typography>
+              <Box component="ul" sx={{ m: 0, pl: 2.5, mb: 0.5 }}>
+                {[
+                  <><strong>Application type:</strong> Web application</>,
+                  <><strong>Name:</strong> Family Dashboard (or anything)</>,
+                  <><strong>Authorized JavaScript origins:</strong> your Pi&rsquo;s URL — see the{" "}
+                    <strong>FQDN Setup</strong> tab for options</>,
+                ].map((item, i) => (
+                  <Box key={i} component="li">
+                    <Typography variant="body2" color="text.secondary">{item}</Typography>
+                  </Box>
+                ))}
               </Box>
-            ))}
+              <Typography variant="body2" color="text.secondary">
+                After clicking <strong>Create</strong>, a dialog shows your <strong>Client ID</strong>{" "}
+                and <strong>Client Secret</strong>. Copy both and paste them into the fields at the top
+                of this page. No Redirect URIs are needed — this dashboard uses a popup flow.
+              </Typography>
+            </Box>
+          ),
+        },
+      ].map(({ n, title, href, btnLabel, content }) => (
+        <Box key={n} sx={{ display: "flex", gap: 1.5 }}>
+          <Box sx={{
+            width: 24, height: 24, minWidth: 24, borderRadius: "50%",
+            bgcolor: "primary.main", color: "#fff",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: "0.72rem", fontWeight: 700, mt: 0.2, flexShrink: 0,
+          }}>
+            {n}
           </Box>
-        </AccordionDetails>
-      </Accordion>
+          <Box sx={{ flex: 1, display: "flex", flexDirection: "column", gap: 0.5 }}>
+            <Typography variant="body2" fontWeight={600}>{title}</Typography>
+            {content}
+            {href && (
+              <Box>
+                <Button size="small" variant="outlined" component="a" href={href}
+                  target="_blank" rel="noopener noreferrer"
+                  endIcon={<OpenInNewIcon sx={{ fontSize: "0.8rem !important" }} />}
+                  sx={{ textTransform: "none", fontSize: "0.78rem", py: 0.25 }}>
+                  {btnLabel}
+                </Button>
+              </Box>
+            )}
+          </Box>
+        </Box>
+      ))}
     </Section>
   );
 }
 
-// ── Cloudflare Tunnel Settings (owner-only) ───────────────────────────────────
+// ── FQDN Setup (owner-only) ───────────────────────────────────────────────────
 
 function TunnelSettings() {
   const [token,       setToken]       = useState("");
@@ -1732,11 +1785,110 @@ function TunnelSettings() {
   };
 
   return (
-    <Section icon={<RouterIcon />} title="Cloudflare Tunnel">
+    <Section icon={<RouterIcon />} title="FQDN Setup">
+      <Typography variant="body2" color="text.secondary">
+        Google OAuth requires a real domain name (FQDN) — raw IP addresses are not accepted as
+        Authorized JavaScript Origins in Google Cloud Console. Choose the option that fits your
+        setup, then add the resulting URL to your OAuth client credentials.
+      </Typography>
+
+      {/* ── Option 1 — Tailscale ─────────────────────────────────────────────── */}
+      <Accordion disableGutters elevation={0} sx={{
+        border: "1px solid", borderColor: "divider", borderRadius: "6px !important",
+        "&:before": { display: "none" },
+      }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 44, "& .MuiAccordionSummary-content": { my: 0.75 } }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Chip size="small" label="Free" color="success" sx={{ fontSize: "0.65rem", height: 18 }} />
+            <Typography variant="body2" fontWeight={600}>Option 1 — Tailscale (no custom domain needed)</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0, pb: 2 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.25 }}>
+            Tailscale gives every device a stable <strong>machine.tail-xxxxx.ts.net</strong> HTTPS
+            hostname for free — no port-forwarding, no firewall changes, no domain required.
+          </Typography>
+          <Box component="ol" sx={{ m: 0, pl: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
+            {[
+              { text: "SSH into your Pi and install Tailscale:", code: "curl -fsSL https://tailscale.com/install.sh | sh" },
+              { text: "Authenticate (a URL is printed to the console):", code: "sudo tailscale up" },
+              { text: "Open the printed URL in a browser and sign in. Tailscale accounts are free at tailscale.com." },
+              { text: "Open tailscale.com/admin/machines and find your Pi. Copy its MagicDNS hostname — e.g.:", code: "pi-name.tail-xxxxx.ts.net" },
+              { text: "In Google Cloud Console → Credentials, edit your OAuth 2.0 client. Under Authorized JavaScript origins → Add URI:", code: "https://pi-name.tail-xxxxx.ts.net" },
+              { text: "Click Save (Google takes a few minutes to propagate)." },
+              { text: "In Settings → Pi Display → Custom FQDN, enter:", code: "pi-name.tail-xxxxx.ts.net" },
+              { text: "Access the dashboard at:", code: "https://pi-name.tail-xxxxx.ts.net/settings" },
+            ].map((item, i) => (
+              <Box component="li" key={i}>
+                <Typography variant="body2">{item.text}</Typography>
+                {item.code && (
+                  <Typography variant="body2" sx={{
+                    fontFamily: "monospace", bgcolor: "action.hover",
+                    px: 1, py: 0.25, borderRadius: 0.5, mt: 0.5,
+                    wordBreak: "break-all", fontSize: "0.78rem",
+                  }}>
+                    {item.code}
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Box>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* ── Option 2 — Cloudflare Tunnel ─────────────────────────────────────── */}
+      <Accordion disableGutters elevation={0} sx={{
+        border: "1px solid", borderColor: "divider", borderRadius: "6px !important",
+        "&:before": { display: "none" },
+      }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 44, "& .MuiAccordionSummary-content": { my: 0.75 } }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Chip size="small" label="Custom domain" color="info" sx={{ fontSize: "0.65rem", height: 18 }} />
+            <Typography variant="body2" fontWeight={600}>Option 2 — Cloudflare Tunnel (requires a domain on Cloudflare)</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0, pb: 2 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.25 }}>
+            <strong>cloudflared is pre-installed</strong> on this Pi. Connecting it to Cloudflare
+            exposes your dashboard at a custom subdomain with automatic HTTPS — no port-forwarding
+            or open firewall ports needed.
+          </Typography>
+          <Box component="ol" sx={{ m: 0, pl: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
+            {[
+              { text: "In your Cloudflare dashboard → Zero Trust → Networks → Tunnels → Create a tunnel. Choose Cloudflared, give it a name, and copy the tunnel token." },
+              { text: "Paste the token into the Cloudflare Tunnel Service form below, click Save Token, then Start Tunnel." },
+              { text: "Back in Cloudflare → your tunnel → Public Hostname → Add a hostname:", code: "Subdomain: dashboard  (or your choice)\nDomain:    yourdomain.com\nService:   HTTP  →  localhost:80" },
+              { text: "In Google Cloud Console → Credentials, edit your OAuth client. Under Authorized JavaScript origins → Add URI:", code: "https://dashboard.yourdomain.com" },
+              { text: "Click Save (Google takes a few minutes to propagate)." },
+              { text: "In Settings → Pi Display → Custom FQDN, enter:", code: "dashboard.yourdomain.com" },
+              { text: "Access the dashboard at:", code: "https://dashboard.yourdomain.com/settings" },
+            ].map((item, i) => (
+              <Box component="li" key={i}>
+                <Typography variant="body2">{item.text}</Typography>
+                {item.code && (
+                  <Typography variant="body2" sx={{
+                    fontFamily: "monospace", bgcolor: "action.hover",
+                    px: 1, py: 0.25, borderRadius: 0.5, mt: 0.5,
+                    whiteSpace: "pre-wrap", fontSize: "0.78rem",
+                  }}>
+                    {item.code}
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Box>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* ── Cloudflare Tunnel Service ─────────────────────────────────────────── */}
+      <Divider sx={{ mt: 1 }} />
+      <Typography variant="body2" fontWeight={600} gutterBottom>
+        Cloudflare Tunnel Service
+      </Typography>
       <Alert severity="info" icon={false} sx={{ py: 0.75 }}>
         <strong>cloudflared is pre-installed</strong> on this Pi image — no manual install needed.
-        Paste the tunnel token from the Cloudflare dashboard to connect this Pi to your Cloudflare
-        network. See <strong>OAuth / Google → Setup Help</strong> for step-by-step instructions.
+        Paste the tunnel token from the Cloudflare dashboard (Step 1 above) to connect this Pi to
+        your Cloudflare network.
       </Alert>
 
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
@@ -1811,8 +1963,8 @@ function TunnelSettings() {
               Clear Token &amp; Stop Tunnel
             </Button>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-              Removes the token from this Pi and stops cloudflared. The tunnel still exists in
-              your Cloudflare dashboard and can be reconnected by saving a new token.
+              Removes the token from this Pi and stops cloudflared. The tunnel still exists in your
+              Cloudflare dashboard and can be reconnected by saving a new token.
             </Typography>
           </Box>
         </>
@@ -2148,7 +2300,7 @@ export default function Settings() {
     const admin = [
       isAdminOrOwner                  && { value: "permissions", label: "Permissions",        icon: <SecurityIcon fontSize="small" /> },
       (isOwner || !oauthConfigured)   && { value: "oauth",       label: "OAuth / Google",     icon: <LockIcon fontSize="small" /> },
-      isOwner                         && { value: "tunnel",      label: "Cloudflare Tunnel",  icon: <RouterIcon fontSize="small" /> },
+      isOwner                         && { value: "tunnel",      label: "FQDN Setup",         icon: <RouterIcon fontSize="small" /> },
       isOwner                         && { value: "backup",      label: "Backup & Restore",   icon: <BackupIcon fontSize="small" /> },
       isOwner                         && { value: "reset",       label: "Reset Install",      icon: <RestartAltIcon fontSize="small" /> },
     ].filter(Boolean);

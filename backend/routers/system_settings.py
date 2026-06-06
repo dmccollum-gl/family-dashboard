@@ -163,7 +163,6 @@ def save_display_config(body: dict):
 SECTIONS = [
     "weather_location",
     "pi_display",
-    "add_calendar",
     "family_calendars",
     "family_members",
     "rss_feeds",

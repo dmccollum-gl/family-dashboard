@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Box, Typography, Paper, Chip, IconButton, CircularProgress,
   Tooltip, ToggleButtonGroup, ToggleButton, Button,
+  Snackbar, Alert,
 } from "@mui/material";
 import SettingsIcon      from "@mui/icons-material/Settings";
 import WaterDropIcon     from "@mui/icons-material/WaterDrop";
 import AirIcon           from "@mui/icons-material/Air";
 import ThermostatIcon    from "@mui/icons-material/Thermostat";
 import WarningAmberIcon  from "@mui/icons-material/WarningAmber";
+import CloseIcon         from "@mui/icons-material/Close";
 import DarkModeIcon        from "@mui/icons-material/DarkMode";
 import LightModeIcon       from "@mui/icons-material/LightMode";
 import BrightnessAutoIcon  from "@mui/icons-material/BrightnessAuto";
@@ -787,9 +789,17 @@ function Footer({ view, baseDate, setView, setBaseDate }) {
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const navigate                   = useNavigate();
-  const [view,     setView]        = useState("week");
-  const [baseDate, setBaseDate]    = useState(() => startOfDay(new Date()));
+  const navigate                        = useNavigate();
+  const [view,          setView]        = useState("week");
+  const [baseDate,      setBaseDate]    = useState(() => startOfDay(new Date()));
+  const [oauthBanner,   setOauthBanner] = useState(false);
+
+  // Show a banner the moment we detect OAuth credentials are missing.
+  useEffect(() => {
+    api.get("/api/settings/oauth")
+      .then(res => { if (!res.data.configured) setOauthBanner(true); })
+      .catch(() => {});
+  }, []);
 
   return (
     <Box sx={{
@@ -816,6 +826,43 @@ export default function Dashboard() {
 
       <CalendarGrid view={view} baseDate={baseDate} />
       <Footer view={view} baseDate={baseDate} setView={setView} setBaseDate={setBaseDate} />
+
+      {/* OAuth not-configured banner */}
+      <Snackbar
+        open={oauthBanner}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+        sx={{ top: { xs: 8, sm: 16 }, zIndex: 1400 }}
+      >
+        <Alert
+          severity="warning"
+          variant="filled"
+          icon={<WarningAmberIcon fontSize="inherit" />}
+          action={
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+              <Button
+                color="inherit"
+                size="small"
+                onClick={() => { setOauthBanner(false); navigate("/settings"); }}
+                sx={{ fontWeight: 700, whiteSpace: "nowrap" }}
+              >
+                Set Up Now
+              </Button>
+              <IconButton
+                color="inherit"
+                size="small"
+                onClick={() => setOauthBanner(false)}
+                aria-label="dismiss"
+              >
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            </Box>
+          }
+          sx={{ width: "100%", alignItems: "center", "& .MuiAlert-action": { alignItems: "center", pt: 0 } }}
+        >
+          Google sign-in is not configured — family members can&rsquo;t sign in until OAuth
+          credentials are added.
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

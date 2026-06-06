@@ -107,12 +107,88 @@ info "Python packages installed."
 
 # -- Default config ------------------------------------------------------------
 if [ ! -f "$APP_DIR/backend/dashboard_config.json" ]; then
-  cp "$APP_DIR/backend/dashboard_config.example.json" \
-     "$APP_DIR/backend/dashboard_config.json"
-  chown "$DASH_USER:$DASH_USER" "$APP_DIR/backend/dashboard_config.json"
-  warn "Default config installed. Edit $APP_DIR/backend/dashboard_config.json"
-  warn "Then: sudo systemctl restart dashboard-backend"
+  if [ -f "$APP_DIR/backend/dashboard_config.example.json" ]; then
+    cp "$APP_DIR/backend/dashboard_config.example.json" \
+       "$APP_DIR/backend/dashboard_config.json"
+    chown "$DASH_USER:$DASH_USER" "$APP_DIR/backend/dashboard_config.json"
+    warn "Default config installed. Edit $APP_DIR/backend/dashboard_config.json"
+    warn "Then: sudo systemctl restart dashboard-backend"
+  else
+    echo "{}" > "$APP_DIR/backend/dashboard_config.json"
+    chown "$DASH_USER:$DASH_USER" "$APP_DIR/backend/dashboard_config.json"
+  fi
 fi
+
+# -- cloudflared (Cloudflare Tunnel client) ------------------------------------
+step "Installing cloudflared"
+CF_BIN=/usr/local/bin/cloudflared
+if [ ! -f "$CF_BIN" ]; then
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    aarch64|arm64) CF_ARCH="arm64" ;;
+    armv7l|armhf)  CF_ARCH="arm"   ;;
+    x86_64)        CF_ARCH="amd64" ;;
+    *)             CF_ARCH="arm64" ;;
+  esac
+  CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
+  info "Downloading cloudflared (${CF_ARCH})..."
+  if curl -fsSL --retry 3 --retry-delay 5 -o "$CF_BIN" "$CF_URL"; then
+    chmod +x "$CF_BIN"
+    info "cloudflared installed: $("$CF_BIN" --version 2>&1 | head -1)"
+  else
+    warn "cloudflared download failed — Cloudflare Tunnel will not work until manually installed."
+  fi
+else
+  info "cloudflared already installed: $("$CF_BIN" --version 2>&1 | head -1)"
+fi
+
+# Helper script that reads the tunnel token from dashboard_config.json
+cat > "$APP_DIR/cloudflared-run.sh" << 'CFRUN'
+#!/bin/bash
+TOKEN=$(python3 -c "
+import json, os
+cfg = os.environ.get('DASHBOARD_CONFIG', '/opt/dashboard/backend/dashboard_config.json')
+try:
+    with open(cfg) as f:
+        print(json.load(f).get('tunnel_token') or '')
+except Exception:
+    print('')
+" 2>/dev/null)
+if [ -z "$TOKEN" ]; then
+    echo "[cloudflared] No tunnel token configured — exiting cleanly." >&2
+    exit 0
+fi
+exec /usr/local/bin/cloudflared tunnel run --token "$TOKEN"
+CFRUN
+chmod +x "$APP_DIR/cloudflared-run.sh"
+chown "$DASH_USER:$DASH_USER" "$APP_DIR/cloudflared-run.sh"
+
+# cloudflared systemd service
+cat > /etc/systemd/system/cloudflared.service << 'CFSVC'
+[Unit]
+Description=Cloudflare Tunnel for Dashboard
+After=network-online.target dashboard-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dashboard
+Group=dashboard
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 45); do curl -sf http://127.0.0.1:8001/api/health >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1'
+ExecStart=/opt/dashboard/cloudflared-run.sh
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=600
+StartLimitBurst=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloudflared
+
+[Install]
+WantedBy=multi-user.target
+CFSVC
+systemctl enable cloudflared.service 2>/dev/null || true
+info "cloudflared service configured."
 
 # -- nginx ---------------------------------------------------------------------
 step "Configuring nginx"
@@ -148,6 +224,19 @@ SUBSYSTEM=="drm", GROUP="render", MODE="0660"
 SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0660"
 UDEV
 udevadm control --reload-rules 2>/dev/null || true
+
+# -- sudoers rules (dashboard user needs these for the web UI controls) -------
+step "Configuring sudoers"
+cat > /etc/sudoers.d/dashboard << 'SUDOERS'
+Defaults:dashboard !requiretty
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dashboard-backend
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl start cloudflared
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop cloudflared
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cloudflared
+dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/update.sh
+SUDOERS
+chmod 0440 /etc/sudoers.d/dashboard
+info "sudoers rules installed."
 
 # -- systemd services ----------------------------------------------------------
 step "Installing systemd services"
@@ -205,6 +294,11 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin ${DASH_USER} --noclear %I \$TERM
 EOF
 systemctl daemon-reload
+
+# -- Mark as installed ---------------------------------------------------------
+touch "$APP_DIR/.installed"
+chown "$DASH_USER:$DASH_USER" "$APP_DIR/.installed"
+info "Marked as installed: $APP_DIR/.installed"
 
 # -- Start services ------------------------------------------------------------
 step "Starting services"

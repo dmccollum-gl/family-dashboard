@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pathlib import Path
+from datetime import datetime
 import json, subprocess, threading
 
 router = APIRouter()
@@ -272,3 +273,131 @@ def control_tunnel(action: str):
         daemon=True,
     ).start()
     return {"status": action + "ing"}
+
+
+# ── Software Update ────────────────────────────────────────────────────────────
+
+_APP_DIR     = Path("/opt/dashboard")
+_UPDATE_LOCK = threading.Lock()
+_update_state: dict = {
+    "running":   False,
+    "log":       [],
+    "exit_code": None,
+    "started":   None,
+}
+
+
+def _git_run(*args, timeout: int = 30):
+    """Run a git command inside APP_DIR. Returns (stdout, stderr, returncode)."""
+    r = subprocess.run(
+        ["git", "-C", str(_APP_DIR), *args],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    return r.stdout.strip(), r.stderr.strip(), r.returncode
+
+
+@router.get("/update/version")
+def get_version():
+    """Return the currently-installed git commit (if any)."""
+    git_dir = _APP_DIR / ".git"
+    if not git_dir.exists():
+        return {"installed": False, "commit": None, "date": None, "branch": None}
+    try:
+        commit, _, _ = _git_run("rev-parse", "--short", "HEAD")
+        date,   _, _ = _git_run("log", "-1", "--format=%ci")
+        branch, _, _ = _git_run("rev-parse", "--abbrev-ref", "HEAD")
+        return {"installed": True, "commit": commit, "date": date, "branch": branch}
+    except Exception as e:
+        return {"installed": False, "error": str(e)}
+
+
+@router.get("/update/check")
+def check_update():
+    """Fetch from origin and compare with local HEAD. May take up to 30 s."""
+    if not (_APP_DIR / ".git").exists():
+        return {"error": "Not a git installation — updates not available."}
+    try:
+        _, err, rc = _git_run("fetch", "origin", timeout=45)
+        if rc != 0:
+            return {"error": f"git fetch failed: {err or 'no internet?'}"}
+
+        local,  _, _ = _git_run("rev-parse", "--short", "HEAD")
+        remote, _, _ = _git_run("rev-parse", "--short", "origin/main")
+        log,    _, _ = _git_run("log", "HEAD..origin/main", "--oneline")
+        changes = [l for l in log.splitlines() if l.strip()]
+        return {
+            "local_commit":  local,
+            "remote_commit": remote,
+            "up_to_date":    local == remote,
+            "changes":       changes,
+            "count":         len(changes),
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": "Timed out — check your internet connection."}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/update/apply")
+def apply_update():
+    """Start the update script in the background."""
+    global _update_state
+    with _UPDATE_LOCK:
+        if _update_state["running"]:
+            raise HTTPException(status_code=409, detail="An update is already in progress.")
+        if not (_APP_DIR / ".git").exists():
+            raise HTTPException(status_code=400, detail="Not a git installation.")
+        update_script = _APP_DIR / "pi" / "update.sh"
+        if not update_script.exists():
+            raise HTTPException(status_code=400, detail=f"Update script not found: {update_script}")
+
+    def _run():
+        global _update_state
+        with _UPDATE_LOCK:
+            _update_state = {
+                "running":   True,
+                "log":       [],
+                "exit_code": None,
+                "started":   datetime.now().isoformat(),
+            }
+        try:
+            proc = subprocess.Popen(
+                ["sudo", "bash", str(update_script)],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            for line in proc.stdout:
+                with _UPDATE_LOCK:
+                    _update_state["log"].append(line.rstrip())
+            proc.wait(timeout=900)   # 15-min ceiling
+            with _UPDATE_LOCK:
+                _update_state["exit_code"] = proc.returncode
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            with _UPDATE_LOCK:
+                _update_state["log"].append("ERROR: Update timed out after 15 minutes.")
+                _update_state["exit_code"] = -1
+        except Exception as e:
+            with _UPDATE_LOCK:
+                _update_state["log"].append(f"ERROR: {e}")
+                _update_state["exit_code"] = -1
+        finally:
+            with _UPDATE_LOCK:
+                _update_state["running"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "started"}
+
+
+@router.get("/update/status")
+def get_update_status():
+    """Poll this endpoint to track update progress."""
+    with _UPDATE_LOCK:
+        snap = dict(_update_state)
+    return {
+        "running":   snap["running"],
+        "exit_code": snap["exit_code"],
+        "started":   snap["started"],
+        "log":       snap["log"][-200:],   # last 200 lines
+        "success":   (snap["exit_code"] == 0) if snap["exit_code"] is not None else None,
+    }

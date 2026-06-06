@@ -37,6 +37,7 @@ import VisibilityOffIcon         from "@mui/icons-material/VisibilityOff";
 import OpenInNewIcon             from "@mui/icons-material/OpenInNew";
 import ExpandMoreIcon            from "@mui/icons-material/ExpandMore";
 import RouterIcon                from "@mui/icons-material/Router";
+import SystemUpdateAltIcon       from "@mui/icons-material/SystemUpdateAlt";
 import { googleLogout, useGoogleLogin } from "@react-oauth/google";
 import { useNavigate } from "react-router-dom";
 import api from "../../api/client";
@@ -2208,6 +2209,275 @@ function PermissionsSettings({ currentRole }) {
   );
 }
 
+// ── Software Updates (owner-only) ─────────────────────────────────────────────
+
+function UpdateSettings() {
+  const [version,     setVersion]     = useState(null);
+  const [checking,    setChecking]    = useState(false);
+  const [checkResult, setCheckResult] = useState(null);
+  const [applying,    setApplying]    = useState(false);
+  const [status,      setStatus]      = useState(null);
+  const [showLog,     setShowLog]     = useState(false);
+  const pollRef  = useRef(null);
+  const logBoxRef = useRef(null);
+
+  const loadVersion = useCallback(async () => {
+    try {
+      const res = await api.get("/api/settings/update/version");
+      setVersion(res.data);
+    } catch {}
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
+
+  const startPolling = useCallback(() => {
+    if (pollRef.current) return;
+    let failCount = 0;
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await api.get("/api/settings/update/status");
+        failCount = 0;
+        setStatus(res.data);
+        if (logBoxRef.current) logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+        if (!res.data.running) {
+          stopPolling();
+          setApplying(false);
+          loadVersion();
+        }
+      } catch {
+        failCount++;
+        // Backend restarted mid-update (expected — setup.sh restarts it)
+        if (failCount >= 5) {
+          stopPolling();
+          setApplying(false);
+          setStatus(prev => prev
+            ? { ...prev, running: false, restarted: true }
+            : { running: false, restarted: true, log: [] }
+          );
+          loadVersion();
+        }
+      }
+    }, 2500);
+  }, [stopPolling, loadVersion]);
+
+  useEffect(() => {
+    loadVersion();
+    // Resume tracking if an update is already in progress
+    api.get("/api/settings/update/status")
+      .then(res => {
+        if (res.data.running) {
+          setApplying(true);
+          setStatus(res.data);
+          setShowLog(true);
+          startPolling();
+        }
+      })
+      .catch(() => {});
+  }, [loadVersion, startPolling]);
+
+  useEffect(() => () => stopPolling(), [stopPolling]);
+
+  const handleCheck = async () => {
+    setChecking(true); setCheckResult(null);
+    try {
+      const res = await api.get("/api/settings/update/check");
+      setCheckResult(res.data);
+    } catch (e) {
+      setCheckResult({ error: e?.response?.data?.detail || "Check failed." });
+    } finally { setChecking(false); }
+  };
+
+  const handleApply = async () => {
+    setApplying(true); setStatus(null); setShowLog(true);
+    try {
+      await api.post("/api/settings/update/apply");
+      startPolling();
+    } catch (e) {
+      setApplying(false);
+      setCheckResult(prev => ({ ...prev, applyError: e?.response?.data?.detail || "Failed to start update." }));
+    }
+  };
+
+  if (version === null) return (
+    <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+      <CircularProgress size={24} />
+    </Box>
+  );
+
+  const isGitInstall = version?.installed;
+
+  return (
+    <Section icon={<SystemUpdateAltIcon />} title="Software Updates">
+      <Typography variant="body2" color="text.secondary">
+        Pull the latest features and bug fixes from GitHub. Your settings, users, and
+        config are never overwritten — only the application code is updated.
+      </Typography>
+
+      {/* ── Current version ─────────────────────────────────────────────── */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
+        <Typography variant="body2" fontWeight={500}>Installed version:</Typography>
+        {isGitInstall ? (
+          <>
+            <Chip size="small" label={version.commit}
+              sx={{ fontFamily: "monospace", fontSize: "0.75rem" }} />
+            {version.date && (
+              <Typography variant="caption" color="text.secondary">
+                {new Date(version.date).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+              </Typography>
+            )}
+            {version.branch && version.branch !== "main" && (
+              <Chip size="small" label={`branch: ${version.branch}`} color="warning" variant="outlined" />
+            )}
+          </>
+        ) : (
+          <Chip size="small" label="Not a git install" color="warning" />
+        )}
+      </Box>
+
+      {/* ── Not a git install ────────────────────────────────────────────── */}
+      {!isGitInstall && (
+        <Alert severity="info">
+          Automatic updates are only available on Pis that were set up via the
+          official image (installed from GitHub). Manual installs cannot use
+          this feature.
+        </Alert>
+      )}
+
+      {/* ── Check + Apply ────────────────────────────────────────────────── */}
+      {isGitInstall && (
+        <>
+          <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "center" }}>
+            <Button
+              variant="outlined"
+              startIcon={checking
+                ? <CircularProgress size={16} color="inherit" />
+                : <RefreshIcon />}
+              onClick={handleCheck}
+              disabled={checking || applying}
+            >
+              Check for Updates
+            </Button>
+            {checkResult?.up_to_date && (
+              <Chip size="small" color="success" label="Already up to date ✓" />
+            )}
+          </Box>
+
+          {/* Check error */}
+          {checkResult?.error && (
+            <Alert severity="error" onClose={() => setCheckResult(null)}>
+              {checkResult.error}
+            </Alert>
+          )}
+
+          {/* Updates available */}
+          {checkResult && !checkResult.error && !checkResult.up_to_date && (
+            <Box sx={{ border: "1px solid", borderColor: "primary.light", borderRadius: 1, p: 1.5,
+                       bgcolor: "primary.50" }}>
+              <Typography variant="body2" fontWeight={600} gutterBottom>
+                {checkResult.count} update{checkResult.count !== 1 ? "s" : ""} available
+              </Typography>
+              {checkResult.changes.length > 0 && (
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.15, mb: 1.5,
+                           maxHeight: 160, overflowY: "auto" }}>
+                  {checkResult.changes.map((c, i) => (
+                    <Typography key={i} variant="caption"
+                      sx={{ fontFamily: "monospace", color: "text.secondary" }}>
+                      {c}
+                    </Typography>
+                  ))}
+                </Box>
+              )}
+              <Button
+                variant="contained"
+                startIcon={applying
+                  ? <CircularProgress size={16} color="inherit" />
+                  : <SystemUpdateAltIcon />}
+                onClick={handleApply}
+                disabled={applying}
+              >
+                {applying ? "Updating…" : "Apply Update"}
+              </Button>
+              {checkResult.applyError && (
+                <Alert severity="error" sx={{ mt: 1 }}>{checkResult.applyError}</Alert>
+              )}
+            </Box>
+          )}
+        </>
+      )}
+
+      {/* ── Update progress / log ────────────────────────────────────────── */}
+      {(applying || status !== null) && (
+        <Box>
+          {status?.restarted && (
+            <Alert severity="success" sx={{ mb: 1 }} onClose={() => setStatus(null)}>
+              Update applied — backend restarted with new code.
+            </Alert>
+          )}
+          {!status?.restarted && status?.success === true && (
+            <Alert severity="success" sx={{ mb: 1 }} onClose={() => setStatus(null)}>
+              Update complete! The backend is restarting.
+            </Alert>
+          )}
+          {!status?.restarted && status?.success === false && (
+            <Alert severity="error" sx={{ mb: 1 }}>
+              Update failed (exit code {status.exit_code}). See the log below.
+            </Alert>
+          )}
+
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+            <Typography variant="body2" fontWeight={500} color={applying ? "primary.main" : "text.primary"}>
+              {applying ? (
+                <Box component="span" sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+                  <CircularProgress size={14} />
+                  Update in progress…
+                </Box>
+              ) : "Update log"}
+            </Typography>
+            <Button size="small" sx={{ py: 0, minHeight: 0 }}
+              onClick={() => setShowLog(v => !v)}>
+              {showLog ? "Hide" : "Show"} log
+            </Button>
+          </Box>
+
+          {showLog && (
+            <Box ref={logBoxRef} sx={{
+              bgcolor: "grey.900", color: "#e0e0e0",
+              p: 1.5, borderRadius: 1, mt: 0.5,
+              fontFamily: "monospace", fontSize: "0.72rem", lineHeight: 1.6,
+              maxHeight: 320, overflowY: "auto",
+              whiteSpace: "pre-wrap", wordBreak: "break-all",
+            }}>
+              {(status?.log || []).length === 0 && applying && (
+                <Box component="span" sx={{ opacity: 0.5 }}>Starting…</Box>
+              )}
+              {(status?.log || []).map((line, i) => (
+                <Box key={i} component="div">{line}</Box>
+              ))}
+              {applying && (
+                <Box component="span" sx={{ opacity: 0.5, animation: "blink 1s step-end infinite" }}>▋</Box>
+              )}
+            </Box>
+          )}
+        </Box>
+      )}
+
+      {/* ── Manual install tip ───────────────────────────────────────────── */}
+      {isGitInstall && !applying && (
+        <Alert severity="info" icon={false} sx={{ py: 0.75 }}>
+          <Typography variant="caption">
+            You can also update manually over SSH:{" "}
+            <Box component="span" sx={{ fontFamily: "monospace" }}>
+              sudo bash /opt/dashboard/pi/update.sh
+            </Box>
+          </Typography>
+        </Alert>
+      )}
+    </Section>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 // ── Sidebar nav button ─────────────────────────────────────────────────────────
@@ -2301,6 +2571,7 @@ export default function Settings() {
       isAdminOrOwner                  && { value: "permissions", label: "Permissions",        icon: <SecurityIcon fontSize="small" /> },
       (isOwner || !oauthConfigured)   && { value: "oauth",       label: "OAuth / Google",     icon: <LockIcon fontSize="small" /> },
       isOwner                         && { value: "tunnel",      label: "FQDN Setup",         icon: <RouterIcon fontSize="small" /> },
+      isOwner                         && { value: "updates",     label: "Updates",            icon: <SystemUpdateAltIcon fontSize="small" /> },
       isOwner                         && { value: "backup",      label: "Backup & Restore",   icon: <BackupIcon fontSize="small" /> },
       isOwner                         && { value: "reset",       label: "Reset Install",      icon: <RestartAltIcon fontSize="small" /> },
     ].filter(Boolean);
@@ -2320,6 +2591,7 @@ export default function Settings() {
       case "permissions":      return <PermissionsSettings currentRole={currentRole} />;
       case "oauth":            return <OAuthSettings />;
       case "tunnel":           return <TunnelSettings />;
+      case "updates":          return <UpdateSettings />;
       case "backup":           return <BackupSection />;
       case "reset":            return <ResetSection />;
       default:                 return null;

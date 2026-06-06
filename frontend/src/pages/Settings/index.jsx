@@ -6,6 +6,7 @@ import {
   Switch, ListItemText, ListItemIcon, IconButton, Tooltip,
   Checkbox, Radio, RadioGroup, FormControlLabel, FormControl, FormLabel,
   ToggleButton, ToggleButtonGroup, InputAdornment,
+  Accordion, AccordionSummary, AccordionDetails,
 } from "@mui/material";
 import SaveIcon                  from "@mui/icons-material/Save";
 import AccountCircleIcon         from "@mui/icons-material/AccountCircle";
@@ -34,6 +35,8 @@ import UploadIcon                from "@mui/icons-material/Upload";
 import VisibilityIcon            from "@mui/icons-material/Visibility";
 import VisibilityOffIcon         from "@mui/icons-material/VisibilityOff";
 import OpenInNewIcon             from "@mui/icons-material/OpenInNew";
+import ExpandMoreIcon            from "@mui/icons-material/ExpandMore";
+import RouterIcon                from "@mui/icons-material/Router";
 import { googleLogout, useGoogleLogin } from "@react-oauth/google";
 import { useNavigate } from "react-router-dom";
 import api from "../../api/client";
@@ -1569,6 +1572,251 @@ function OAuthSettings() {
           Save Credentials
         </Button>
       </Box>
+
+      {/* ── Setup Help ─────────────────────────────────────────────────────────── */}
+      <Divider sx={{ mt: 1 }} />
+      <Typography variant="body2" fontWeight={600} gutterBottom>
+        How to get a URL Google will accept
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        Google OAuth requires a proper FQDN (domain name) — raw IP addresses are not accepted as
+        Authorized JavaScript Origins. Pick the option that fits your setup:
+      </Typography>
+
+      {/* Option 1 — Tailscale */}
+      <Accordion disableGutters elevation={0} sx={{
+        border: "1px solid", borderColor: "divider", mb: 1, borderRadius: "6px !important",
+        "&:before": { display: "none" },
+      }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 44, "& .MuiAccordionSummary-content": { my: 0.75 } }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Chip size="small" label="Free" color="success" sx={{ fontSize: "0.65rem", height: 18 }} />
+            <Typography variant="body2" fontWeight={600}>Option 1 — Tailscale (no custom domain needed)</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0, pb: 2 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.25 }}>
+            Tailscale gives every device a stable <strong>machine.tail-xxxxx.ts.net</strong> HTTPS hostname
+            at no cost — no port-forwarding or firewall changes required.
+          </Typography>
+          <Box component="ol" sx={{ m: 0, pl: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
+            {[
+              { text: "SSH into your Pi and install Tailscale:", code: "curl -fsSL https://tailscale.com/install.sh | sh" },
+              { text: "Authenticate (opens a URL in the console):", code: "sudo tailscale up" },
+              { text: "Follow the URL printed to the terminal and sign in — Tailscale accounts are free at tailscale.com." },
+              { text: "Open tailscale.com/admin/machines and find your Pi. Copy its MagicDNS hostname — it looks like:", code: "pi-name.tail-xxxxx.ts.net" },
+              { text: "In Google Cloud Console → APIs & Services → Credentials, edit your OAuth 2.0 client. Under Authorized JavaScript origins, click Add URI and enter:", code: "https://pi-name.tail-xxxxx.ts.net" },
+              { text: "Click Save. Google takes a few minutes to propagate." },
+              { text: "In Settings → Pi Display → Custom FQDN, enter:", code: "pi-name.tail-xxxxx.ts.net" },
+              { text: "Sign in to the dashboard via Tailscale at:", code: "https://pi-name.tail-xxxxx.ts.net/settings" },
+            ].map((item, i) => (
+              <Box component="li" key={i}>
+                <Typography variant="body2">{item.text}</Typography>
+                {item.code && (
+                  <Typography variant="body2" sx={{
+                    fontFamily: "monospace", bgcolor: "action.hover",
+                    px: 1, py: 0.25, borderRadius: 0.5, mt: 0.5,
+                    wordBreak: "break-all", fontSize: "0.78rem",
+                  }}>
+                    {item.code}
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Box>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* Option 2 — Cloudflare Tunnel */}
+      <Accordion disableGutters elevation={0} sx={{
+        border: "1px solid", borderColor: "divider", borderRadius: "6px !important",
+        "&:before": { display: "none" },
+      }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 44, "& .MuiAccordionSummary-content": { my: 0.75 } }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Chip size="small" label="Custom domain" color="info" sx={{ fontSize: "0.65rem", height: 18 }} />
+            <Typography variant="body2" fontWeight={600}>Option 2 — Cloudflare Tunnel (requires a domain on Cloudflare)</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0, pb: 2 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.25 }}>
+            <strong>cloudflared is pre-installed</strong> on this Pi. Connecting it to Cloudflare exposes
+            the dashboard at a custom subdomain with automatic HTTPS — no port-forwarding needed.
+            See <strong>Settings → Cloudflare Tunnel</strong> to save your token and control the service.
+          </Typography>
+          <Box component="ol" sx={{ m: 0, pl: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
+            {[
+              { text: "In your Cloudflare dashboard → Zero Trust → Networks → Tunnels → Create a tunnel. Choose Cloudflared, give it a name, then copy the tunnel token." },
+              { text: "Go to Settings → Cloudflare Tunnel (in the sidebar), paste the token, click Save Token, then Start Tunnel." },
+              { text: "Back in Cloudflare → your tunnel → Public Hostname → Add a hostname:", code: "Subdomain: dashboard  (or your choice)\nDomain: yourdomain.com\nService: HTTP  →  localhost:80" },
+              { text: "In Google Cloud Console → Credentials, edit your OAuth client. Under Authorized JavaScript origins, add:", code: "https://dashboard.yourdomain.com" },
+              { text: "Click Save. Google takes a few minutes to propagate." },
+              { text: "In Settings → Pi Display → Custom FQDN, enter:", code: "dashboard.yourdomain.com" },
+              { text: "Sign in to the dashboard via Cloudflare at:", code: "https://dashboard.yourdomain.com/settings" },
+            ].map((item, i) => (
+              <Box component="li" key={i}>
+                <Typography variant="body2">{item.text}</Typography>
+                {item.code && (
+                  <Typography variant="body2" sx={{
+                    fontFamily: "monospace", bgcolor: "action.hover",
+                    px: 1, py: 0.25, borderRadius: 0.5, mt: 0.5,
+                    whiteSpace: "pre-wrap", fontSize: "0.78rem",
+                  }}>
+                    {item.code}
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Box>
+        </AccordionDetails>
+      </Accordion>
+    </Section>
+  );
+}
+
+// ── Cloudflare Tunnel Settings (owner-only) ───────────────────────────────────
+
+function TunnelSettings() {
+  const [token,       setToken]       = useState("");
+  const [showToken,   setShowToken]   = useState(false);
+  const [configured,  setConfigured]  = useState(false);
+  const [active,      setActive]      = useState(false);
+  const [saving,      setSaving]      = useState(false);
+  const [controlling, setControlling] = useState(false);
+  const [msg,         setMsg]         = useState(null);
+  const [error,       setError]       = useState(null);
+  const MASKED = "••••••••";
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.get("/api/settings/tunnel");
+      setToken(res.data.configured ? MASKED : "");
+      setConfigured(res.data.configured);
+      setActive(res.data.active);
+    } catch {}
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleSave = async () => {
+    setSaving(true); setMsg(null); setError(null);
+    try {
+      await api.put("/api/settings/tunnel", { token });
+      setMsg("Token saved. Use the controls below to start the tunnel.");
+      if (token && token !== MASKED) setToken(MASKED);
+      setConfigured(true);
+    } catch { setError("Failed to save token."); }
+    finally { setSaving(false); }
+  };
+
+  const handleControl = async (action) => {
+    setControlling(true); setMsg(null); setError(null);
+    try {
+      await api.post(`/api/settings/tunnel/${action}`);
+      const labels = { start: "Starting", stop: "Stopping", restart: "Restarting" };
+      setMsg(`${labels[action]} cloudflared — status will update in a few seconds.`);
+      setTimeout(() => load(), 4000);
+    } catch { setError(`Failed to ${action} tunnel.`); }
+    finally { setControlling(false); }
+  };
+
+  const handleClear = async () => {
+    setSaving(true); setMsg(null); setError(null);
+    try {
+      await api.post("/api/settings/tunnel/stop");
+      await api.put("/api/settings/tunnel", { clear: true });
+      setToken(""); setConfigured(false); setActive(false);
+      setMsg("Token cleared and tunnel stopped.");
+    } catch { setError("Failed to clear token."); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Section icon={<RouterIcon />} title="Cloudflare Tunnel">
+      <Alert severity="info" icon={false} sx={{ py: 0.75 }}>
+        <strong>cloudflared is pre-installed</strong> on this Pi image — no manual install needed.
+        Paste the tunnel token from the Cloudflare dashboard to connect this Pi to your Cloudflare
+        network. See <strong>OAuth / Google → Setup Help</strong> for step-by-step instructions.
+      </Alert>
+
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+        <Typography variant="body2" fontWeight={500}>Tunnel status:</Typography>
+        <Chip
+          size="small"
+          label={active ? "Active" : "Inactive"}
+          color={active ? "success" : "default"}
+          variant={active ? "filled" : "outlined"}
+        />
+        <Tooltip title="Refresh status">
+          <IconButton size="small" onClick={load}>
+            <RefreshIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Box>
+
+      <TextField
+        label="Tunnel Token" size="small" fullWidth
+        type={showToken ? "text" : "password"}
+        value={token}
+        onChange={e => setToken(e.target.value)}
+        placeholder="eyJhIjoixxxxxxxxxxxxxxxxxxxxxxxx…"
+        helperText="Cloudflare dashboard → Zero Trust → Networks → Tunnels → your tunnel → Configure → Token"
+        InputProps={{
+          endAdornment: (
+            <InputAdornment position="end">
+              <Tooltip title={showToken ? "Hide" : "Show"}>
+                <IconButton size="small" onClick={() => setShowToken(v => !v)}>
+                  {showToken ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+            </InputAdornment>
+          ),
+        }}
+      />
+
+      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+
+      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
+        <Button variant="contained"
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+          onClick={handleSave}
+          disabled={saving || !token.trim() || token === MASKED}>
+          Save Token
+        </Button>
+        <Button variant="outlined"
+          startIcon={controlling ? <CircularProgress size={16} color="inherit" /> : null}
+          onClick={() => handleControl(active ? "stop" : "start")}
+          disabled={controlling || !configured}>
+          {active ? "Stop Tunnel" : "Start Tunnel"}
+        </Button>
+        <Button variant="outlined"
+          startIcon={controlling ? <CircularProgress size={16} color="inherit" /> : <ReplayIcon />}
+          onClick={() => handleControl("restart")}
+          disabled={controlling || !configured}>
+          Restart
+        </Button>
+      </Box>
+
+      {configured && (
+        <>
+          <Divider sx={{ mt: 1 }} />
+          <Box>
+            <Typography variant="body2" fontWeight={500} color="text.secondary" gutterBottom>
+              Danger Zone
+            </Typography>
+            <Button variant="outlined" color="error" size="small"
+              startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <DeleteIcon />}
+              onClick={handleClear} disabled={saving || controlling}>
+              Clear Token &amp; Stop Tunnel
+            </Button>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+              Removes the token from this Pi and stops cloudflared. The tunnel still exists in
+              your Cloudflare dashboard and can be reconnected by saving a new token.
+            </Typography>
+          </Box>
+        </>
+      )}
     </Section>
   );
 }
@@ -1898,10 +2146,11 @@ export default function Settings() {
     ].filter(Boolean);
 
     const admin = [
-      isAdminOrOwner                  && { value: "permissions", label: "Permissions",     icon: <SecurityIcon fontSize="small" /> },
-      (isOwner || !oauthConfigured)   && { value: "oauth",       label: "OAuth / Google",  icon: <LockIcon fontSize="small" /> },
-      isOwner                         && { value: "backup",      label: "Backup & Restore", icon: <BackupIcon fontSize="small" /> },
-      isOwner                         && { value: "reset",       label: "Reset Install",   icon: <RestartAltIcon fontSize="small" /> },
+      isAdminOrOwner                  && { value: "permissions", label: "Permissions",        icon: <SecurityIcon fontSize="small" /> },
+      (isOwner || !oauthConfigured)   && { value: "oauth",       label: "OAuth / Google",     icon: <LockIcon fontSize="small" /> },
+      isOwner                         && { value: "tunnel",      label: "Cloudflare Tunnel",  icon: <RouterIcon fontSize="small" /> },
+      isOwner                         && { value: "backup",      label: "Backup & Restore",   icon: <BackupIcon fontSize="small" /> },
+      isOwner                         && { value: "reset",       label: "Reset Install",      icon: <RestartAltIcon fontSize="small" /> },
     ].filter(Boolean);
 
     return { userTabs: user, adminTabs: admin };
@@ -1918,6 +2167,7 @@ export default function Settings() {
       case "restart_services": return <RestartServices />;
       case "permissions":      return <PermissionsSettings currentRole={currentRole} />;
       case "oauth":            return <OAuthSettings />;
+      case "tunnel":           return <TunnelSettings />;
       case "backup":           return <BackupSection />;
       case "reset":            return <ResetSection />;
       default:                 return null;

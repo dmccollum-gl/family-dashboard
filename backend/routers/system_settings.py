@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pathlib import Path
 import json, subprocess, threading
 
@@ -225,3 +225,50 @@ def restart_display():
         daemon=True,
     ).start()
     return {"status": "restarting"}
+
+
+# ── Cloudflare Tunnel ──────────────────────────────────────────────────────────
+
+@router.get("/tunnel")
+def get_tunnel():
+    cfg   = _read_config()
+    token = cfg.get("tunnel_token", "")
+    try:
+        out    = subprocess.run(
+            ["systemctl", "is-active", "cloudflared"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        active = out == "active"
+    except Exception:
+        active = False
+    return {
+        "configured": bool(token),
+        "token":      _MASKED if token else "",
+        "active":     active,
+    }
+
+
+@router.put("/tunnel")
+def save_tunnel(body: dict):
+    updates = {}
+    if body.get("clear"):
+        updates["tunnel_token"] = ""
+    elif body.get("token") and body["token"] != _MASKED:
+        updates["tunnel_token"] = body["token"].strip()
+    if updates:
+        _write_config(updates)
+    return {"status": "saved"}
+
+
+@router.post("/tunnel/{action}")
+def control_tunnel(action: str):
+    if action not in ("start", "stop", "restart"):
+        raise HTTPException(status_code=400, detail="Invalid action. Use start, stop, or restart.")
+    threading.Thread(
+        target=_after,
+        args=(0.5, lambda: subprocess.run(
+            ["sudo", "systemctl", action, "cloudflared"], check=False
+        )),
+        daemon=True,
+    ).start()
+    return {"status": action + "ing"}

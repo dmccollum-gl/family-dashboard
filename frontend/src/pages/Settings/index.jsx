@@ -38,6 +38,8 @@ import OpenInNewIcon             from "@mui/icons-material/OpenInNew";
 import ExpandMoreIcon            from "@mui/icons-material/ExpandMore";
 import RouterIcon                from "@mui/icons-material/Router";
 import SystemUpdateAltIcon       from "@mui/icons-material/SystemUpdateAlt";
+import AccessTimeIcon            from "@mui/icons-material/AccessTime";
+import PowerSettingsNewIcon      from "@mui/icons-material/PowerSettingsNew";
 import { googleLogout, useGoogleLogin } from "@react-oauth/google";
 import { useNavigate } from "react-router-dom";
 import api from "../../api/client";
@@ -2115,6 +2117,7 @@ function ResetSection() {
 const SECTION_LABELS = {
   weather_location: "Weather Location",
   pi_display:       "Pi Display Controls",
+  display_schedule: "Display Schedule",
   family_calendars: "Family Calendars",
   family_members:   "Family Members",
   rss_feeds:        "RSS News Feeds",
@@ -2478,6 +2481,184 @@ function UpdateSettings() {
   );
 }
 
+// ── Display Schedule ──────────────────────────────────────────────────────────
+
+const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function DisplayScheduleSettings() {
+  const [enabled,  setEnabled]  = useState(false);
+  const [onTime,   setOnTime]   = useState("07:00");
+  const [offTime,  setOffTime]  = useState("22:00");
+  const [days,     setDays]     = useState([0, 1, 2, 3, 4, 5, 6]);   // 0=Mon … 6=Sun
+  const [saving,   setSaving]   = useState(false);
+  const [powering, setPowering] = useState(false);
+  const [msg,      setMsg]      = useState(null);
+  const [error,    setError]    = useState(null);
+
+  useEffect(() => {
+    api.get("/api/settings/display_schedule").then(res => {
+      setEnabled(!!res.data.enabled);
+      setOnTime(res.data.on_time   || "07:00");
+      setOffTime(res.data.off_time || "22:00");
+      setDays(res.data.days        ?? [0, 1, 2, 3, 4, 5, 6]);
+    }).catch(() => {});
+  }, []);
+
+  const toggleDay = (d) =>
+    setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort((a, b) => a - b));
+
+  const handleSave = async () => {
+    setSaving(true); setMsg(null); setError(null);
+    try {
+      await api.put("/api/settings/display_schedule", { enabled, on_time: onTime, off_time: offTime, days });
+      setMsg("Schedule saved — will take effect within 60 seconds.");
+    } catch { setError("Failed to save schedule."); }
+    finally { setSaving(false); }
+  };
+
+  const handlePower = async (on) => {
+    setPowering(true); setMsg(null); setError(null);
+    try {
+      const res = await api.post("/api/settings/display_schedule/power", { on });
+      setMsg(`Display turned ${res.data.status}${res.data.command_ok ? "" : " (command may not be available on this device)"}.`);
+    } catch { setError("Power command failed."); }
+    finally { setPowering(false); }
+  };
+
+  return (
+    <Section icon={<AccessTimeIcon />} title="Display Schedule">
+      <Typography variant="body2" color="text.secondary">
+        Automatically turn the Pi&rsquo;s HDMI output off at night and back on in the morning.
+        Uses <Box component="span" sx={{ fontFamily: "monospace", bgcolor: "action.hover", px: 0.5, borderRadius: 0.5, fontSize: "0.78rem" }}>vcgencmd display_power</Box> — no reboot needed.
+      </Typography>
+
+      {/* ── Enable toggle ────────────────────────────────────────────────── */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+        <Typography variant="body2" fontWeight={500}>Enable schedule:</Typography>
+        <Switch checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+        <Typography variant="body2" color="text.secondary">
+          {enabled ? "On — display follows the schedule below" : "Off — display is always on"}
+        </Typography>
+      </Box>
+
+      {/* ── Time window ──────────────────────────────────────────────────── */}
+      <Box sx={{ display: "flex", gap: 3, flexWrap: "wrap", alignItems: "flex-end", opacity: enabled ? 1 : 0.45 }}>
+        <TextField
+          label="Turn on at"
+          type="time"
+          size="small"
+          value={onTime}
+          onChange={e => setOnTime(e.target.value)}
+          disabled={!enabled}
+          sx={{ width: 150 }}
+          InputLabelProps={{ shrink: true }}
+          inputProps={{ step: 300 }}
+        />
+        <TextField
+          label="Turn off at"
+          type="time"
+          size="small"
+          value={offTime}
+          onChange={e => setOffTime(e.target.value)}
+          disabled={!enabled}
+          sx={{ width: 150 }}
+          InputLabelProps={{ shrink: true }}
+          inputProps={{ step: 300 }}
+        />
+        {onTime && offTime && (() => {
+          const [oh, om] = onTime.split(":").map(Number);
+          const [fh, fm] = offTime.split(":").map(Number);
+          const onMin  = oh * 60 + om;
+          const offMin = fh * 60 + fm;
+          const overnight = offMin <= onMin;
+          return (
+            <Typography variant="caption" color="text.secondary" sx={{ pb: 0.5 }}>
+              {overnight
+                ? `Display on ${onTime}–midnight then midnight–${offTime} (overnight)`
+                : `Display on ${onTime}–${offTime}`}
+            </Typography>
+          );
+        })()}
+      </Box>
+
+      {/* ── Day-of-week picker ───────────────────────────────────────────── */}
+      <Box sx={{ opacity: enabled ? 1 : 0.45 }}>
+        <Typography variant="body2" fontWeight={500} gutterBottom>Active days:</Typography>
+        <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap" }}>
+          {DAY_LABELS.map((label, idx) => (
+            <Box
+              key={idx}
+              onClick={() => enabled && toggleDay(idx)}
+              sx={{
+                width: 42, height: 42,
+                borderRadius: "50%",
+                border: "2px solid",
+                borderColor: days.includes(idx) ? "primary.main" : "divider",
+                bgcolor: days.includes(idx) ? "primary.main" : "transparent",
+                color: days.includes(idx) ? "primary.contrastText" : "text.secondary",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                cursor: enabled ? "pointer" : "default",
+                fontWeight: 600, fontSize: "0.78rem",
+                userSelect: "none",
+                transition: "all 0.15s",
+                "&:hover": enabled ? { opacity: 0.85 } : {},
+              }}
+            >
+              {label}
+            </Box>
+          ))}
+        </Box>
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+          {days.length === 7
+            ? "Every day"
+            : days.length === 0
+            ? "No days selected — display will always be on"
+            : DAY_LABELS.filter((_, i) => days.includes(i)).join(", ")}
+        </Typography>
+      </Box>
+
+      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+
+      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
+        <Button variant="contained"
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+          onClick={handleSave} disabled={saving}>
+          Save Schedule
+        </Button>
+      </Box>
+
+      {/* ── Manual override ──────────────────────────────────────────────── */}
+      <Divider sx={{ mt: 1 }} />
+      <Typography variant="body2" fontWeight={500}>Manual override</Typography>
+      <Typography variant="body2" color="text.secondary">
+        Immediately turn the display on or off for testing. The scheduler resumes on the next
+        60-second tick.
+      </Typography>
+      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
+        <Button
+          variant="outlined"
+          color="success"
+          startIcon={powering ? <CircularProgress size={16} color="inherit" /> : <PowerSettingsNewIcon />}
+          onClick={() => handlePower(true)}
+          disabled={powering}
+        >
+          Display On
+        </Button>
+        <Button
+          variant="outlined"
+          color="error"
+          startIcon={powering ? <CircularProgress size={16} color="inherit" /> : <PowerSettingsNewIcon />}
+          onClick={() => handlePower(false)}
+          disabled={powering}
+        >
+          Display Off
+        </Button>
+      </Box>
+    </Section>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 // ── Sidebar nav button ─────────────────────────────────────────────────────────
@@ -2561,6 +2742,7 @@ export default function Settings() {
       { value: "my_account",       label: "My Account",       icon: <AccountCircleIcon fontSize="small" /> },
       canSee("weather_location") && { value: "weather_location", label: "Weather",          icon: <CloudIcon fontSize="small" /> },
       canSee("pi_display")       && { value: "pi_display",       label: "Pi Display",       icon: <TvIcon fontSize="small" /> },
+      canSee("display_schedule") && { value: "display_schedule", label: "Schedule",          icon: <AccessTimeIcon fontSize="small" /> },
       canSee("family_calendars") && { value: "family_calendars", label: "Family Calendars", icon: <GroupAddIcon fontSize="small" /> },
       canSee("family_members")   && { value: "family_members",   label: "Family Members",   icon: <CalendarMonthIcon fontSize="small" /> },
       canSee("rss_feeds")        && { value: "rss_feeds",        label: "RSS Feeds",        icon: <RssFeedIcon fontSize="small" /> },
@@ -2584,6 +2766,7 @@ export default function Settings() {
       case "my_account":       return <MyAccount onSignIn={handleSignIn} onSignOut={handleSignOut} />;
       case "weather_location": return <WeatherLocation />;
       case "pi_display":       return <PiDisplay currentRole={currentRole} />;
+      case "display_schedule": return <DisplayScheduleSettings />;
       case "family_calendars": return <FamilyCalendars />;
       case "family_members":   return <FamilyMembers currentUser={currentUser} currentRole={currentRole} />;
       case "rss_feeds":        return <RssSettings />;

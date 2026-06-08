@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pathlib import Path
 from datetime import datetime
-import json, subprocess, threading
+import json, subprocess, threading, time as _time
 
 router = APIRouter()
 
@@ -164,6 +164,7 @@ def save_display_config(body: dict):
 SECTIONS = [
     "weather_location",
     "pi_display",
+    "display_schedule",
     "family_calendars",
     "family_members",
     "rss_feeds",
@@ -401,3 +402,111 @@ def get_update_status():
         "log":       snap["log"][-200:],   # last 200 lines
         "success":   (snap["exit_code"] == 0) if snap["exit_code"] is not None else None,
     }
+
+
+# ── Display Schedule ────────────────────────────────────────────────────────────
+
+_disp_lock           = threading.Lock()
+_disp_applied: dict  = {"on": None}   # None = first tick; we track last applied state
+
+
+def _vcgencmd_display(on: bool) -> bool:
+    """Fire vcgencmd display_power 0/1. Returns True on success."""
+    import shutil
+    vcg = shutil.which("vcgencmd") or "/usr/bin/vcgencmd"
+    try:
+        r = subprocess.run(
+            [vcg, "display_power", "1" if on else "0"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _should_display_be_on(sched: dict) -> bool:
+    """Return True if the display should be on right now according to the schedule."""
+    if not sched.get("enabled"):
+        return True                           # schedule disabled → always on
+
+    now   = datetime.now()
+    today = now.weekday()                     # 0 = Monday … 6 = Sunday
+    days  = sched.get("days", list(range(7)))
+
+    if today not in days:
+        return True                           # today not scheduled → always on
+
+    on_time  = sched.get("on_time",  "07:00")
+    off_time = sched.get("off_time", "22:00")
+    cur_min  = now.hour * 60 + now.minute
+
+    on_h,  on_m  = map(int, on_time.split(":"))
+    off_h, off_m = map(int, off_time.split(":"))
+    on_min  = on_h  * 60 + on_m
+    off_min = off_h * 60 + off_m
+
+    if on_min <= off_min:
+        # Normal same-day window  e.g. 07:00 → 22:00
+        return on_min <= cur_min < off_min
+    else:
+        # Overnight window  e.g. 22:00 → 07:00
+        return cur_min >= on_min or cur_min < off_min
+
+
+def _display_schedule_ticker():
+    """Background thread: enforce display on/off schedule, checked every 60 s."""
+    while True:
+        try:
+            cfg   = _read_config()
+            sched = cfg.get("display_schedule", {})
+            want  = _should_display_be_on(sched)
+            with _disp_lock:
+                if want != _disp_applied["on"]:
+                    _disp_applied["on"] = want
+                    _vcgencmd_display(want)
+        except Exception:
+            pass
+        _time.sleep(60)
+
+
+# Start scheduler when the router module loads (daemon thread dies with the process)
+threading.Thread(target=_display_schedule_ticker, daemon=True).start()
+
+
+@router.get("/display_schedule")
+def get_display_schedule():
+    cfg   = _read_config()
+    sched = cfg.get("display_schedule", {})
+    return {
+        "enabled":  sched.get("enabled",  False),
+        "on_time":  sched.get("on_time",  "07:00"),
+        "off_time": sched.get("off_time", "22:00"),
+        "days":     sched.get("days",     list(range(7))),
+    }
+
+
+@router.put("/display_schedule")
+def save_display_schedule(body: dict):
+    days = sorted({int(d) for d in body.get("days", list(range(7))) if 0 <= int(d) <= 6})
+    _write_config({
+        "display_schedule": {
+            "enabled":  bool(body.get("enabled", False)),
+            "on_time":  body.get("on_time",  "07:00"),
+            "off_time": body.get("off_time", "22:00"),
+            "days":     days,
+        }
+    })
+    # Force the scheduler to re-evaluate immediately on next tick
+    with _disp_lock:
+        _disp_applied["on"] = None
+    return {"status": "saved"}
+
+
+@router.post("/display_schedule/power")
+def manual_display_power(body: dict):
+    """Immediately turn the display on or off (for testing or manual override)."""
+    on = bool(body.get("on", True))
+    ok = _vcgencmd_display(on)
+    with _disp_lock:
+        _disp_applied["on"] = on
+    return {"status": "on" if on else "off", "command_ok": ok}

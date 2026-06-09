@@ -1740,6 +1740,12 @@ function TunnelSettings() {
   const [cfTunnelOk,   setCfTunnelOk]   = useState(false); // token has Tunnel:Edit permission
   const [cfVerifyMsg,  setCfVerifyMsg]  = useState(null); // { type, text }
   const [cfSetupMsg,   setCfSetupMsg]   = useState(null); // { type, text?, fqdn?, dnsCreated? }
+  // Tunnel list / management
+  const [cfTunnels,       setCfTunnels]       = useState(null);  // null=not loaded
+  const [cfTunnelsLoading, setCfTunnelsLoading] = useState(false);
+  const [cfTunnelsError,  setCfTunnelsError]  = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deletingId,      setDeletingId]      = useState(null);
   const MASKED = "••••••••";
 
   const load = useCallback(async () => {
@@ -1835,12 +1841,37 @@ function TunnelSettings() {
       setConfigured(true);
       setTimeout(() => load(), 4000); // refresh active status
       setCfSetupMsg({ type: "success", fqdn: d.fqdn, dnsCreated: d.dns_created, dnsError: d.dns_error });
+      // Refresh tunnel list if already loaded
+      if (cfTunnels !== null) setTimeout(() => loadCfTunnels(), 2000);
     } catch (e) {
       const msg = e.response?.data?.detail || "Setup failed — check Pi logs for details.";
       setCfSetupMsg({ type: "error", text: msg });
     } finally {
       setCfSetting(false);
     }
+  };
+
+  const loadCfTunnels = useCallback(async () => {
+    setCfTunnelsLoading(true); setCfTunnelsError(null);
+    try {
+      const res = await api.get("/api/settings/cloudflare/tunnels");
+      if (res.data.error) { setCfTunnelsError(res.data.error); setCfTunnels([]); }
+      else                { setCfTunnels(res.data.tunnels || []); }
+    } catch { setCfTunnelsError("Failed to load tunnels."); setCfTunnels([]); }
+    finally  { setCfTunnelsLoading(false); }
+  }, []);
+
+  const handleDeleteTunnel = async (tunnelId) => {
+    setDeletingId(tunnelId); setConfirmDeleteId(null); setCfTunnelsError(null);
+    try {
+      const res = await api.delete(`/api/settings/cloudflare/tunnel/${tunnelId}`);
+      if (res.data.was_current) {
+        setToken(""); setConfigured(false); setActive(false); setFqdn("");
+      }
+      await loadCfTunnels();
+    } catch (e) {
+      setCfTunnelsError(e.response?.data?.detail || "Failed to delete tunnel.");
+    } finally { setDeletingId(null); }
   };
 
   useEffect(() => { load(); }, [load]);
@@ -2194,6 +2225,103 @@ function TunnelSettings() {
             </Typography>
           </Box>
         </>
+      )}
+
+      {/* ── Manage Cloudflare Tunnels ─────────────────────────────────────────── */}
+      <Divider sx={{ mt: 1 }} />
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
+        <Typography variant="body2" fontWeight={600}>Cloudflare Tunnels</Typography>
+        <Button
+          size="small" variant="outlined"
+          startIcon={cfTunnelsLoading ? <CircularProgress size={13} color="inherit" /> : <RefreshIcon />}
+          onClick={loadCfTunnels}
+          disabled={cfTunnelsLoading}
+        >
+          {cfTunnels === null ? "Load Tunnels" : "Refresh"}
+        </Button>
+      </Box>
+
+      {cfTunnelsError && (
+        <Alert severity="error" onClose={() => setCfTunnelsError(null)} sx={{ py: 0.5 }}>
+          {cfTunnelsError}
+        </Alert>
+      )}
+
+      {cfTunnels !== null && cfTunnels.length === 0 && !cfTunnelsError && (
+        <Typography variant="body2" color="text.secondary" sx={{ fontStyle: "italic" }}>
+          No tunnels found on this Cloudflare account.
+        </Typography>
+      )}
+
+      {cfTunnels !== null && cfTunnels.length > 0 && (
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          {cfTunnels.map(t => (
+            <Box key={t.id} sx={{
+              display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap",
+              p: 1.25, borderRadius: 1,
+              border: "1px solid", borderColor: t.is_current ? "primary.main" : "divider",
+              bgcolor: t.is_current ? "action.selected" : "transparent",
+            }}>
+              {/* Status + name */}
+              <Chip
+                size="small"
+                label={t.active ? "Active" : "Inactive"}
+                color={t.active ? "success" : "default"}
+                variant={t.active ? "filled" : "outlined"}
+                sx={{ minWidth: 66 }}
+              />
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                  <Typography variant="body2" fontWeight={t.is_current ? 700 : 400}
+                    sx={{ wordBreak: "break-all" }}>
+                    {t.name}
+                  </Typography>
+                  {t.is_current && (
+                    <Chip size="small" label="This Pi" color="primary"
+                      sx={{ fontSize: "0.6rem", height: 16 }} />
+                  )}
+                </Box>
+                {t.fqdn && (
+                  <Typography variant="caption" color="text.secondary">
+                    {t.fqdn}
+                  </Typography>
+                )}
+                <Typography variant="caption" color="text.disabled" sx={{ display: "block" }}>
+                  {t.id.slice(0, 8)}…
+                  {t.created_at && ` · created ${new Date(t.created_at).toLocaleDateString()}`}
+                </Typography>
+              </Box>
+              {/* Delete / confirm */}
+              {confirmDeleteId === t.id ? (
+                <Box sx={{ display: "flex", gap: 0.75 }}>
+                  <Button size="small" color="error" variant="contained"
+                    disabled={deletingId === t.id}
+                    startIcon={deletingId === t.id ? <CircularProgress size={13} color="inherit" /> : <DeleteIcon />}
+                    onClick={() => handleDeleteTunnel(t.id)}>
+                    Confirm
+                  </Button>
+                  <Button size="small" variant="outlined"
+                    onClick={() => setConfirmDeleteId(null)}>
+                    Cancel
+                  </Button>
+                </Box>
+              ) : (
+                <Tooltip title={t.is_current
+                  ? "Deletes tunnel, removes DNS record, clears token, stops cloudflared"
+                  : "Deletes this tunnel from Cloudflare"}>
+                  <span>
+                    <Button size="small" color="error" variant="outlined"
+                      disabled={!!deletingId}
+                      startIcon={<DeleteIcon />}
+                      onClick={() => setConfirmDeleteId(t.id)}>
+                      Delete
+                    </Button>
+                  </span>
+                </Tooltip>
+              )}
+            </Box>
+          ))}
+        </Box>
       )}
 
       {/* ── Custom Hostname ───────────────────────────────────────────────────── */}

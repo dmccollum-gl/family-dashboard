@@ -597,7 +597,7 @@ def cf_setup(body: dict):
     threading.Thread(
         target=_after,
         args=(0.5, lambda: subprocess.run(
-            ["sudo", "systemctl", "start", "cloudflared"], check=False
+            ["sudo", "systemctl", "restart", "cloudflared"], check=False
         )),
         daemon=True,
     ).start()
@@ -609,6 +609,131 @@ def cf_setup(body: dict):
         "dns_created": dns_ok,
         "dns_error":   dns_error,
     }
+
+
+@router.get("/cloudflare/tunnels")
+def cf_list_tunnels():
+    """List all non-deleted Cloudflare Tunnels for the stored account."""
+    import httpx as _httpx
+
+    cfg        = _read_config()
+    api_token  = cfg.get("cf_api_token",  "")
+    account_id = cfg.get("cf_account_id", "")
+    current_id = cfg.get("cf_tunnel_id",  "")
+    current_fqdn = cfg.get("custom_fqdn", "")
+
+    if not api_token or not account_id:
+        return {"tunnels": [], "error": "No Cloudflare credentials stored. Use Auto-Setup to connect first."}
+
+    hdrs = _cf_hdrs(api_token)
+    try:
+        r = _httpx.get(
+            f"{_CF_API}/accounts/{account_id}/cfd_tunnel",
+            params={"per_page": 100, "is_deleted": "false"},
+            headers=hdrs, timeout=10,
+        )
+        d = r.json()
+        if not d.get("success"):
+            errs = d.get("errors", [])
+            msg  = errs[0].get("message") if errs else "Failed to list tunnels"
+            return {"tunnels": [], "error": msg}
+
+        tunnels = []
+        for t in d.get("result", []):
+            if t.get("deleted_at"):
+                continue
+            tid         = t["id"]
+            conns       = t.get("connections") or []
+            active_conn = [c for c in conns if not c.get("is_pending_reconnect")]
+            tunnels.append({
+                "id":         tid,
+                "name":       t.get("name", ""),
+                "active":     len(active_conn) > 0,
+                "created_at": t.get("created_at", ""),
+                "is_current": tid == current_id,
+                "fqdn":       current_fqdn if tid == current_id else None,
+            })
+
+        return {"tunnels": tunnels, "current_tunnel_id": current_id}
+    except Exception as exc:
+        return {"tunnels": [], "error": str(exc)}
+
+
+@router.delete("/cloudflare/tunnel/{tunnel_id}")
+def cf_delete_tunnel(tunnel_id: str):
+    """Delete a Cloudflare Tunnel (and its DNS record + local token if it's the Pi's tunnel)."""
+    import httpx as _httpx
+
+    cfg        = _read_config()
+    api_token  = cfg.get("cf_api_token",  "")
+    account_id = cfg.get("cf_account_id", "")
+    zone_id    = cfg.get("cf_zone_id",    "")
+    current_id = cfg.get("cf_tunnel_id",  "")
+    old_fqdn   = cfg.get("custom_fqdn",   "")
+
+    if not api_token or not account_id:
+        raise HTTPException(400, "No Cloudflare credentials stored.")
+
+    hdrs = _cf_hdrs(api_token)
+
+    # 1. Close active connections (best-effort)
+    try:
+        _httpx.delete(
+            f"{_CF_API}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/connections",
+            headers=hdrs, timeout=10,
+        )
+    except Exception:
+        pass
+
+    # 2. Delete the tunnel
+    try:
+        r = _httpx.delete(
+            f"{_CF_API}/accounts/{account_id}/cfd_tunnel/{tunnel_id}",
+            headers=hdrs, timeout=10,
+        )
+        d = r.json()
+        if not d.get("success"):
+            errs = d.get("errors", [])
+            msg  = errs[0].get("message") if errs else "Failed to delete tunnel"
+            raise HTTPException(500, msg)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to delete tunnel: {exc}")
+
+    # 3. Delete DNS CNAME if this is/was the Pi's tunnel
+    is_current = tunnel_id == current_id
+    if is_current and old_fqdn and zone_id:
+        try:
+            r2 = _httpx.get(
+                f"{_CF_API}/zones/{zone_id}/dns_records",
+                params={"name": old_fqdn, "type": "CNAME"},
+                headers=hdrs, timeout=10,
+            )
+            for rec in r2.json().get("result", []):
+                _httpx.delete(
+                    f"{_CF_API}/zones/{zone_id}/dns_records/{rec['id']}",
+                    headers=hdrs, timeout=10,
+                )
+        except Exception:
+            pass
+
+    # 4. Clear Pi-local config and stop cloudflared if it was the active tunnel
+    if is_current:
+        _write_config({
+            "tunnel_token": "",
+            "cf_tunnel_id": "",
+            "custom_fqdn":  "",
+        })
+        threading.Thread(
+            target=_after,
+            args=(0.5, lambda: subprocess.run(
+                ["sudo", "systemctl", "stop", "cloudflared"], check=False
+            )),
+            daemon=True,
+        ).start()
+
+    return {"success": True, "was_current": is_current}
 
 
 # ── Software Update ────────────────────────────────────────────────────────────

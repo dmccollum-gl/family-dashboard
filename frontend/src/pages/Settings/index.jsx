@@ -1375,32 +1375,26 @@ function RssSettings() {
 
 // ── Pi Display ─────────────────────────────────────────────────────────────────
 
-function PiDisplay({ currentRole }) {
+function PiDisplay() {
   const [theme,       setTheme]       = useState("auto");
   const [view,        setView]        = useState("rolling");
   const [weatherView, setWeatherView] = useState("daily");
-  const [fqdn,        setFqdn]        = useState("");
   const [saving,      setSaving]      = useState(false);
   const [msg,         setMsg]         = useState(null);
   const [error,       setError]       = useState(null);
-
-  const isAdminOrOwner = currentRole === "admin" || currentRole === "owner";
 
   useEffect(() => {
     api.get("/api/settings/display").then(res => {
       setTheme(res.data.theme              || "auto");
       setView(res.data.view                || "rolling");
       setWeatherView(res.data.weather_view || "daily");
-      setFqdn(res.data.custom_fqdn         || "");
     }).catch(() => {});
   }, []);
 
   const handleSave = async () => {
     setSaving(true); setMsg(null); setError(null);
     try {
-      const body = { theme, view, weather_view: weatherView };
-      if (isAdminOrOwner) body.custom_fqdn = fqdn;
-      await api.put("/api/settings/display", body);
+      await api.put("/api/settings/display", { theme, view, weather_view: weatherView });
       setMsg("Saved — display updates within 30 seconds.");
     } catch {
       setError("Failed to save.");
@@ -1436,20 +1430,6 @@ function PiDisplay({ currentRole }) {
           <ToggleButton value="hourly">Hourly</ToggleButton>
         </ToggleButtonGroup>
       </Box>
-      {isAdminOrOwner && (
-        <>
-          <Divider />
-          <Typography variant="body2" fontWeight={500}>Custom Hostname (FQDN)</Typography>
-          <Typography variant="body2" color="text.secondary">
-            Shown in the dashboard footer. Leave blank to use the auto-detected hostname.
-          </Typography>
-          <TextField
-            label="Custom FQDN" size="small" fullWidth
-            value={fqdn} onChange={e => setFqdn(e.target.value)}
-            placeholder="dashboard.yourdomain.com"
-          />
-        </>
-      )}
       {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
       {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
       <Box>
@@ -1684,8 +1664,8 @@ function OAuthSettings() {
                 {[
                   <><strong>Application type:</strong> Web application</>,
                   <><strong>Name:</strong> Family Dashboard (or anything)</>,
-                  <><strong>Authorized JavaScript origins:</strong> your Pi&rsquo;s URL — see the{" "}
-                    <strong>FQDN Setup</strong> tab for options</>,
+                  <><strong>Authorized JavaScript origins:</strong> your Pi&rsquo;s URL — set it in the{" "}
+                    <strong>FQDN Setup</strong> tab below</>,
                 ].map((item, i) => (
                   <Box key={i} component="li">
                     <Typography variant="body2" color="text.secondary">{item}</Typography>
@@ -1741,6 +1721,9 @@ function TunnelSettings() {
   const [controlling, setControlling] = useState(false);
   const [msg,         setMsg]         = useState(null);
   const [error,       setError]       = useState(null);
+  const [fqdn,        setFqdn]        = useState("");
+  const [fqdnSaving,  setFqdnSaving]  = useState(false);
+  const [fqdnMsg,     setFqdnMsg]     = useState(null);
   const MASKED = "••••••••";
 
   const load = useCallback(async () => {
@@ -1751,6 +1734,21 @@ function TunnelSettings() {
       setActive(res.data.active);
     } catch {}
   }, []);
+
+  useEffect(() => {
+    api.get("/api/settings/display")
+      .then(res => setFqdn(res.data.custom_fqdn || ""))
+      .catch(() => {});
+  }, []);
+
+  const handleFqdnSave = async () => {
+    setFqdnSaving(true); setFqdnMsg(null);
+    try {
+      await api.put("/api/settings/display", { custom_fqdn: fqdn });
+      setFqdnMsg("Saved.");
+    } catch { setFqdnMsg("error"); }
+    finally { setFqdnSaving(false); }
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -1819,7 +1817,7 @@ function TunnelSettings() {
               { text: "Open tailscale.com/admin/machines and find your Pi. Copy its MagicDNS hostname — e.g.:", code: "pi-name.tail-xxxxx.ts.net" },
               { text: "In Google Cloud Console → Credentials, edit your OAuth 2.0 client. Under Authorized JavaScript origins → Add URI:", code: "https://pi-name.tail-xxxxx.ts.net" },
               { text: "Click Save (Google takes a few minutes to propagate)." },
-              { text: "In Settings → Pi Display → Custom FQDN, enter:", code: "pi-name.tail-xxxxx.ts.net" },
+              { text: "In the Custom Hostname field below, enter:", code: "pi-name.tail-xxxxx.ts.net" },
               { text: "Access the dashboard at:", code: "https://pi-name.tail-xxxxx.ts.net/settings" },
             ].map((item, i) => (
               <Box component="li" key={i}>
@@ -1863,7 +1861,7 @@ function TunnelSettings() {
               { text: "Back in Cloudflare → your tunnel → Public Hostname → Add a hostname:", code: "Subdomain: dashboard  (or your choice)\nDomain:    yourdomain.com\nService:   HTTP  →  localhost:80" },
               { text: "In Google Cloud Console → Credentials, edit your OAuth client. Under Authorized JavaScript origins → Add URI:", code: "https://dashboard.yourdomain.com" },
               { text: "Click Save (Google takes a few minutes to propagate)." },
-              { text: "In Settings → Pi Display → Custom FQDN, enter:", code: "dashboard.yourdomain.com" },
+              { text: "In the Custom Hostname field below, enter:", code: "dashboard.yourdomain.com" },
               { text: "Access the dashboard at:", code: "https://dashboard.yourdomain.com/settings" },
             ].map((item, i) => (
               <Box component="li" key={i}>
@@ -1971,6 +1969,36 @@ function TunnelSettings() {
             </Typography>
           </Box>
         </>
+      )}
+
+      {/* ── Custom Hostname ───────────────────────────────────────────────────── */}
+      <Divider sx={{ mt: 1 }} />
+      <Typography variant="body2" fontWeight={600}>Custom Hostname (FQDN)</Typography>
+      <Typography variant="body2" color="text.secondary">
+        Shown in the dashboard footer and used as the OAuth origin. Set this to your
+        Tailscale hostname or Cloudflare subdomain after completing the steps above.
+        Leave blank to use the Pi&rsquo;s auto-detected hostname.
+      </Typography>
+      <Box sx={{ display: "flex", gap: 1.5, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <TextField
+          label="Custom Hostname" size="small" sx={{ flex: 1, minWidth: 240 }}
+          value={fqdn} onChange={e => setFqdn(e.target.value)}
+          placeholder="dashboard.yourdomain.com"
+        />
+        <Button
+          variant="contained" size="small" sx={{ mt: 0.25 }}
+          startIcon={fqdnSaving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}
+          onClick={handleFqdnSave}
+          disabled={fqdnSaving}
+        >
+          Save
+        </Button>
+      </Box>
+      {fqdnMsg === "error" && (
+        <Alert severity="error" onClose={() => setFqdnMsg(null)}>Failed to save hostname.</Alert>
+      )}
+      {fqdnMsg && fqdnMsg !== "error" && (
+        <Alert severity="success" onClose={() => setFqdnMsg(null)}>{fqdnMsg}</Alert>
       )}
     </Section>
   );
@@ -2780,7 +2808,7 @@ export default function Settings() {
     switch (tab) {
       case "my_account":       return <MyAccount onSignIn={handleSignIn} onSignOut={handleSignOut} />;
       case "weather_location": return <WeatherLocation />;
-      case "pi_display":       return <PiDisplay currentRole={currentRole} />;
+      case "pi_display":       return <PiDisplay />;
       case "display_schedule": return <DisplayScheduleSettings />;
       case "family_calendars": return <FamilyCalendars />;
       case "family_members":   return <FamilyMembers currentUser={currentUser} currentRole={currentRole} />;

@@ -1666,8 +1666,9 @@ function OAuthSettings() {
                 {[
                   <><strong>Application type:</strong> Web application</>,
                   <><strong>Name:</strong> Family Dashboard (or anything)</>,
-                  <><strong>Authorized JavaScript origins:</strong> your Pi&rsquo;s URL — set it in the{" "}
-                    <strong>FQDN Setup</strong> tab below</>,
+                  <><strong>Authorized JavaScript origins:</strong> skip for now — add it after setting
+                    up your FQDN in the <strong>FQDN Setup</strong> tab</>,
+                  <><strong>Authorized redirect URIs:</strong> leave blank</>,
                 ].map((item, i) => (
                   <Box key={i} component="li">
                     <Typography variant="body2" color="text.secondary">{item}</Typography>
@@ -1677,8 +1678,31 @@ function OAuthSettings() {
               <Typography variant="body2" color="text.secondary">
                 After clicking <strong>Create</strong>, a dialog shows your <strong>Client ID</strong>{" "}
                 and <strong>Client Secret</strong>. Copy both and paste them into the fields at the top
-                of this page. No Redirect URIs are needed — this dashboard uses a popup flow.
+                of this page.
               </Typography>
+              <Box sx={{ mt: 1, p: 1.25, bgcolor: "action.hover", borderRadius: 1 }}>
+                <Typography variant="body2" color="text.secondary" fontWeight={600} gutterBottom>
+                  Adding your Pi&rsquo;s URL (do this after FQDN Setup)
+                </Typography>
+                {[
+                  <>Go to <strong>APIs &amp; Services → Credentials</strong> and click on your OAuth 2.0 Client ID name.</>,
+                  <>Under <strong>Authorized JavaScript origins</strong>, click <strong>+ Add URI</strong>.</>,
+                  <>Enter your Pi&rsquo;s full URL — e.g. <code>https://dash.mccollum.xyz</code> — then click <strong>Save</strong>.</>,
+                  <>Google takes a few minutes to propagate the change.</>,
+                ].map((step, i) => (
+                  <Box key={i} sx={{ display: "flex", gap: 1, mb: 0.5 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ minWidth: 16, fontWeight: 700 }}>{i + 1}.</Typography>
+                    <Typography variant="body2" color="text.secondary">{step}</Typography>
+                  </Box>
+                ))}
+                <Button size="small" variant="outlined" component="a"
+                  href="https://console.cloud.google.com/apis/credentials"
+                  target="_blank" rel="noopener noreferrer"
+                  endIcon={<OpenInNewIcon sx={{ fontSize: "0.8rem !important" }} />}
+                  sx={{ textTransform: "none", fontSize: "0.78rem", py: 0.25, mt: 0.5 }}>
+                  Open Credentials Page
+                </Button>
+              </Box>
             </Box>
           ),
         },
@@ -1949,8 +1973,8 @@ function TunnelSettings() {
               { text: "Authenticate (a URL is printed to the console):", code: "sudo tailscale up" },
               { text: "Open the printed URL in a browser and sign in. Tailscale accounts are free at tailscale.com." },
               { text: "Open tailscale.com/admin/machines and find your Pi. Copy its MagicDNS hostname — e.g.:", code: "pi-name.tail-xxxxx.ts.net" },
-              { text: "In Google Cloud Console → Credentials, edit your OAuth 2.0 client. Under Authorized JavaScript origins → Add URI:", code: "https://pi-name.tail-xxxxx.ts.net" },
-              { text: "Click Save (Google takes a few minutes to propagate)." },
+              { text: <>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>Google Cloud Console → APIs &amp; Services → Credentials ↗</a>. Click your <strong>OAuth 2.0 Client ID</strong> name, then under <strong>Authorized JavaScript origins</strong> click <strong>+ Add URI</strong> and enter:</>, code: "https://pi-name.tail-xxxxx.ts.net" },
+              { text: "Click Save. Google takes a few minutes to propagate the change." },
               { text: "In the Custom Hostname field below, enter:", code: "pi-name.tail-xxxxx.ts.net" },
               { text: "Access the dashboard at:", code: "https://pi-name.tail-xxxxx.ts.net/settings" },
             ].map((item, i) => (
@@ -1993,8 +2017,8 @@ function TunnelSettings() {
               { text: "In your Cloudflare dashboard → Zero Trust → Networks → Tunnels → Create a tunnel. Choose Cloudflared, give it a name, and copy the tunnel token." },
               { text: "Paste the token into the Manual Token field in the Cloudflare Tunnel section below, click Save Token, then Start Tunnel." },
               { text: "Back in Cloudflare → your tunnel → Public Hostname → Add a hostname:", code: "Subdomain: dashboard  (or your choice)\nDomain:    yourdomain.com\nService:   HTTP  →  localhost:80" },
-              { text: "In Google Cloud Console → Credentials, edit your OAuth client. Under Authorized JavaScript origins → Add URI:", code: "https://dashboard.yourdomain.com" },
-              { text: "Click Save (Google takes a few minutes to propagate)." },
+              { text: <>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>Google Cloud Console → APIs &amp; Services → Credentials ↗</a>. Click your <strong>OAuth 2.0 Client ID</strong> name, then under <strong>Authorized JavaScript origins</strong> click <strong>+ Add URI</strong> and enter:</>, code: "https://dashboard.yourdomain.com" },
+              { text: "Click Save. Google takes a few minutes to propagate the change." },
               { text: "In the Custom Hostname field below, enter:", code: "dashboard.yourdomain.com" },
               { text: "Access the dashboard at:", code: "https://dashboard.yourdomain.com/settings" },
             ].map((item, i) => (

@@ -38,6 +38,7 @@ import OpenInNewIcon             from "@mui/icons-material/OpenInNew";
 import ExpandMoreIcon            from "@mui/icons-material/ExpandMore";
 import RouterIcon                from "@mui/icons-material/Router";
 import TravelExploreIcon        from "@mui/icons-material/TravelExplore";
+import AutoFixHighIcon          from "@mui/icons-material/AutoFixHigh";
 import SystemUpdateAltIcon       from "@mui/icons-material/SystemUpdateAlt";
 import AccessTimeIcon            from "@mui/icons-material/AccessTime";
 import PowerSettingsNewIcon      from "@mui/icons-material/PowerSettingsNew";
@@ -1727,6 +1728,17 @@ function TunnelSettings() {
   const [fqdnMsg,     setFqdnMsg]     = useState(null);
   const [detecting,   setDetecting]   = useState(false);
   const [detectMsg,   setDetectMsg]   = useState(null);   // { type, text }
+  // Cloudflare auto-setup
+  const [cfApiToken,   setCfApiToken]   = useState("");
+  const [cfAccountId,  setCfAccountId]  = useState("");
+  const [cfZones,      setCfZones]      = useState([]);   // [{id, name}]
+  const [cfZoneId,     setCfZoneId]     = useState("");
+  const [cfSubdomain,  setCfSubdomain]  = useState("dashboard");
+  const [cfTunnelName, setCfTunnelName] = useState("family-dashboard");
+  const [cfVerifying,  setCfVerifying]  = useState(false);
+  const [cfSetting,    setCfSetting]    = useState(false);
+  const [cfVerifyMsg,  setCfVerifyMsg]  = useState(null); // { type, text }
+  const [cfSetupMsg,   setCfSetupMsg]   = useState(null); // { type, text?, fqdn?, dnsCreated? }
   const MASKED = "••••••••";
 
   const load = useCallback(async () => {
@@ -1773,6 +1785,56 @@ function TunnelSettings() {
       setDetectMsg({ type: "error", text: "Detection failed — could not reach the Pi." });
     } finally {
       setDetecting(false);
+    }
+  };
+
+  const handleCfVerify = async () => {
+    setCfVerifying(true); setCfVerifyMsg(null);
+    try {
+      const res = await api.post("/api/settings/cloudflare/verify", {
+        api_token:  cfApiToken.trim(),
+        account_id: cfAccountId.trim(),
+      });
+      const d = res.data;
+      if (!d.valid) {
+        setCfVerifyMsg({ type: "error", text: d.error || "Token invalid or inactive." });
+      } else {
+        const zones = d.zones || [];
+        setCfZones(zones);
+        if (zones.length > 0 && !cfZoneId) setCfZoneId(zones[0].id);
+        setCfVerifyMsg(d.error
+          ? { type: "warning", text: d.error }
+          : { type: "success", text: `Token verified — ${zones.length} domain(s) found.` });
+      }
+    } catch {
+      setCfVerifyMsg({ type: "error", text: "Verification failed — could not reach the Pi." });
+    } finally {
+      setCfVerifying(false);
+    }
+  };
+
+  const handleCfSetup = async () => {
+    setCfSetting(true); setCfSetupMsg(null);
+    try {
+      const res = await api.post("/api/settings/cloudflare/setup", {
+        api_token:   cfApiToken.trim(),
+        account_id:  cfAccountId.trim(),
+        zone_id:     cfZoneId,
+        subdomain:   cfSubdomain.trim() || "dashboard",
+        tunnel_name: cfTunnelName.trim() || "family-dashboard",
+      });
+      const d = res.data;
+      // Auto-fill the FQDN and mark tunnel token as configured
+      setFqdn(d.fqdn);
+      setToken("••••••••");
+      setConfigured(true);
+      setTimeout(() => load(), 4000); // refresh active status
+      setCfSetupMsg({ type: "success", fqdn: d.fqdn, dnsCreated: d.dns_created });
+    } catch (e) {
+      const msg = e.response?.data?.detail || "Setup failed — check Pi logs for details.";
+      setCfSetupMsg({ type: "error", text: msg });
+    } finally {
+      setCfSetting(false);
     }
   };
 
@@ -1904,6 +1966,125 @@ function TunnelSettings() {
               </Box>
             ))}
           </Box>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* ── Cloudflare Auto-Setup ────────────────────────────────────────────── */}
+      <Accordion disableGutters elevation={0} sx={{
+        border: "1px solid", borderColor: "primary.main", borderRadius: "6px !important",
+        "&:before": { display: "none" },
+      }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 44, "& .MuiAccordionSummary-content": { my: 0.75 } }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Chip size="small" label="Automated" color="primary" sx={{ fontSize: "0.65rem", height: 18 }} />
+            <Typography variant="body2" fontWeight={600}>Cloudflare Auto-Setup (API)</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0, pb: 2, display: "flex", flexDirection: "column", gap: 1.5 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+            Provide a Cloudflare API token and your Account ID and the dashboard will create the
+            tunnel, configure ingress, and add the DNS record automatically.
+            Requires a token with <strong>Cloudflare Tunnel: Edit</strong> and <strong>DNS: Edit</strong> permissions.{" "}
+            <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer"
+               style={{ color: "inherit" }}>Create a token →</a>
+          </Typography>
+
+          {/* Step 1 — credentials */}
+          <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
+            <TextField
+              label="Cloudflare API Token" size="small"
+              type="password"
+              sx={{ flex: 2, minWidth: 220 }}
+              value={cfApiToken} onChange={e => setCfApiToken(e.target.value)}
+              placeholder="Starts with …"
+              helperText={<>dash.cloudflare.com → My Profile → API Tokens</>}
+            />
+            <TextField
+              label="Account ID" size="small"
+              sx={{ flex: 1, minWidth: 180 }}
+              value={cfAccountId} onChange={e => setCfAccountId(e.target.value)}
+              placeholder="32-char hex"
+              helperText={<>Cloudflare dashboard URL → right-hand side</>}
+            />
+          </Box>
+          <Box>
+            <Button
+              variant="outlined" size="small"
+              startIcon={cfVerifying ? <CircularProgress size={14} color="inherit" /> : <TravelExploreIcon />}
+              onClick={handleCfVerify}
+              disabled={cfVerifying || cfSetting || !cfApiToken.trim() || !cfAccountId.trim()}
+            >
+              Verify &amp; Load Domains
+            </Button>
+          </Box>
+          {cfVerifyMsg && (
+            <Alert severity={cfVerifyMsg.type} onClose={() => setCfVerifyMsg(null)} sx={{ py: 0.5 }}>
+              {cfVerifyMsg.text}
+            </Alert>
+          )}
+
+          {/* Step 2 — domain + subdomain (only after zones loaded) */}
+          {cfZones.length > 0 && (
+            <>
+              <Divider />
+              <Typography variant="body2" fontWeight={500}>Configure your hostname</Typography>
+              <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "flex-start" }}>
+                <TextField
+                  select label="Domain" size="small" sx={{ flex: 1, minWidth: 180 }}
+                  value={cfZoneId} onChange={e => setCfZoneId(e.target.value)}
+                >
+                  {cfZones.map(z => (
+                    <MenuItem key={z.id} value={z.id}>{z.name}</MenuItem>
+                  ))}
+                </TextField>
+                <TextField
+                  label="Subdomain" size="small" sx={{ flex: 1, minWidth: 130 }}
+                  value={cfSubdomain} onChange={e => setCfSubdomain(e.target.value)}
+                  placeholder="dashboard"
+                  helperText={cfZoneId
+                    ? `→ ${cfSubdomain || "dashboard"}.${cfZones.find(z => z.id === cfZoneId)?.name || ""}`
+                    : ""}
+                />
+                <TextField
+                  label="Tunnel Name" size="small" sx={{ flex: 1, minWidth: 160 }}
+                  value={cfTunnelName} onChange={e => setCfTunnelName(e.target.value)}
+                  placeholder="family-dashboard"
+                  helperText="Label shown in Cloudflare Zero Trust"
+                />
+              </Box>
+              <Box>
+                <Button
+                  variant="contained" size="small"
+                  startIcon={cfSetting ? <CircularProgress size={14} color="inherit" /> : <AutoFixHighIcon />}
+                  onClick={handleCfSetup}
+                  disabled={cfSetting || cfVerifying || !cfZoneId || !cfSubdomain.trim()}
+                >
+                  {cfSetting ? "Creating tunnel…" : "Create Tunnel & DNS Record"}
+                </Button>
+              </Box>
+              {cfSetupMsg && cfSetupMsg.type === "success" && (
+                <Alert severity="success" sx={{ py: 0.5 }}>
+                  <strong>Tunnel created!</strong> Your dashboard is now available at{" "}
+                  <strong>https://{cfSetupMsg.fqdn}</strong>.
+                  {!cfSetupMsg.dnsCreated && (
+                    <Box component="span" sx={{ display: "block", mt: 0.5, color: "warning.main" }}>
+                      ⚠ DNS record could not be created automatically — add a proxied CNAME manually in
+                      Cloudflare DNS: <code>{cfSubdomain}</code> → <code>…cfargotunnel.com</code>.
+                    </Box>
+                  )}
+                  <Box sx={{ mt: 0.75 }}>
+                    <strong>Final step:</strong> add <code>https://{cfSetupMsg.fqdn}</code> as an
+                    Authorized JavaScript Origin in your Google Cloud OAuth client.
+                  </Box>
+                </Alert>
+              )}
+              {cfSetupMsg && cfSetupMsg.type === "error" && (
+                <Alert severity="error" onClose={() => setCfSetupMsg(null)} sx={{ py: 0.5 }}>
+                  {cfSetupMsg.text}
+                </Alert>
+              )}
+            </>
+          )}
         </AccordionDetails>
       </Accordion>
 

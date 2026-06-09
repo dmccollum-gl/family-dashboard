@@ -322,6 +322,189 @@ def detect_fqdn():
     return result
 
 
+# ── Cloudflare API Setup ──────────────────────────────────────────────────────
+
+_CF_API = "https://api.cloudflare.com/client/v4"
+
+
+def _cf_hdrs(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+@router.post("/cloudflare/verify")
+def cf_verify(body: dict):
+    """Verify a Cloudflare API token and list zones for the given account."""
+    import httpx as _httpx
+
+    api_token  = (body.get("api_token")  or "").strip()
+    account_id = (body.get("account_id") or "").strip()
+    if not api_token or not account_id:
+        raise HTTPException(400, "api_token and account_id are required")
+
+    hdrs = _cf_hdrs(api_token)
+
+    # 1. Verify token
+    try:
+        r    = _httpx.get(f"{_CF_API}/user/tokens/verify", headers=hdrs, timeout=10)
+        data = r.json()
+        if not data.get("success") or data.get("result", {}).get("status") != "active":
+            errs = data.get("errors", [])
+            msg  = errs[0].get("message") if errs else "Token is invalid or inactive"
+            return {"valid": False, "error": msg}
+    except Exception as exc:
+        return {"valid": False, "error": str(exc)}
+
+    # 2. List zones for this account
+    try:
+        r    = _httpx.get(f"{_CF_API}/zones",
+                          params={"account.id": account_id, "per_page": 50},
+                          headers=hdrs, timeout=10)
+        data = r.json()
+        if not data.get("success"):
+            errs  = data.get("errors", [])
+            error = errs[0].get("message") if errs else "Could not list zones"
+            return {"valid": True, "zones": [], "error": error}
+        zones = [{"id": z["id"], "name": z["name"]}
+                 for z in data.get("result", [])]
+    except Exception as exc:
+        return {"valid": True, "zones": [], "error": str(exc)}
+
+    # Persist so /setup can reuse without re-sending credentials
+    _write_config({"cf_api_token": api_token, "cf_account_id": account_id})
+
+    return {"valid": True, "zones": zones}
+
+
+@router.post("/cloudflare/setup")
+def cf_setup(body: dict):
+    """
+    Full Cloudflare tunnel setup:
+      1. Create the tunnel
+      2. Configure API-managed ingress rules
+      3. Create a proxied CNAME DNS record
+      4. Save tunnel token + FQDN to Pi config
+      5. Start cloudflared
+    """
+    import httpx as _httpx
+
+    cfg        = _read_config()
+    api_token  = (body.get("api_token")   or cfg.get("cf_api_token",  "")).strip()
+    account_id = (body.get("account_id")  or cfg.get("cf_account_id", "")).strip()
+    zone_id    = (body.get("zone_id")     or "").strip()
+    subdomain  = (body.get("subdomain")   or "dashboard").strip().lower()
+    tname      = (body.get("tunnel_name") or "family-dashboard").strip()
+
+    if not all([api_token, account_id, zone_id, subdomain]):
+        raise HTTPException(400, "api_token, account_id, zone_id, and subdomain are required")
+
+    hdrs = _cf_hdrs(api_token)
+
+    # 1. Resolve zone name  → build FQDN
+    try:
+        r = _httpx.get(f"{_CF_API}/zones/{zone_id}", headers=hdrs, timeout=10)
+        d = r.json()
+        if not d.get("success"):
+            raise HTTPException(400, "Invalid zone_id")
+        zone_name = d["result"]["name"]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to get zone: {exc}")
+
+    fqdn = f"{subdomain}.{zone_name}"
+
+    # 2. Create tunnel
+    try:
+        r = _httpx.post(
+            f"{_CF_API}/accounts/{account_id}/cfd_tunnel",
+            headers=hdrs,
+            json={"name": tname, "config_src": "cloudflare"},
+            timeout=20,
+        )
+        d = r.json()
+        if not d.get("success"):
+            errs = d.get("errors", [])
+            msg  = errs[0].get("message") if errs else "Failed to create tunnel"
+            raise HTTPException(500, msg)
+        tunnel    = d["result"]
+        tunnel_id = tunnel["id"]
+        ttoken    = tunnel.get("token") or ""
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to create tunnel: {exc}")
+
+    # 3. Fetch token separately if not returned by create
+    if not ttoken:
+        try:
+            r      = _httpx.get(
+                f"{_CF_API}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/token",
+                headers=hdrs, timeout=10,
+            )
+            ttoken = r.json().get("result", "")
+        except Exception as exc:
+            raise HTTPException(500, f"Tunnel created but could not fetch token: {exc}")
+
+    # 4. Configure API-managed ingress (non-fatal if fails)
+    try:
+        _httpx.put(
+            f"{_CF_API}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations",
+            headers=hdrs,
+            json={"config": {"ingress": [
+                {"hostname": fqdn, "service": "http://localhost:80"},
+                {"service": "http_status:404"},
+            ]}},
+            timeout=15,
+        )
+    except Exception:
+        pass  # non-fatal; tunnel still works
+
+    # 5. Create proxied CNAME
+    dns_ok = False
+    try:
+        r      = _httpx.post(
+            f"{_CF_API}/zones/{zone_id}/dns_records",
+            headers=hdrs,
+            json={
+                "type":    "CNAME",
+                "name":    subdomain,
+                "content": f"{tunnel_id}.cfargotunnel.com",
+                "proxied": True,
+                "ttl":     1,  # automatic
+            },
+            timeout=15,
+        )
+        dns_ok = r.json().get("success", False)
+    except Exception:
+        pass
+
+    # 6. Persist everything
+    _write_config({
+        "tunnel_token":  ttoken,
+        "custom_fqdn":   fqdn,
+        "cf_api_token":  api_token,
+        "cf_account_id": account_id,
+        "cf_zone_id":    zone_id,
+        "cf_tunnel_id":  tunnel_id,
+    })
+
+    # 7. Start cloudflared
+    threading.Thread(
+        target=_after,
+        args=(0.5, lambda: subprocess.run(
+            ["sudo", "systemctl", "start", "cloudflared"], check=False
+        )),
+        daemon=True,
+    ).start()
+
+    return {
+        "success":     True,
+        "fqdn":        fqdn,
+        "tunnel_id":   tunnel_id,
+        "dns_created": dns_ok,
+    }
+
+
 # ── Software Update ────────────────────────────────────────────────────────────
 
 _APP_DIR     = Path("/opt/dashboard")

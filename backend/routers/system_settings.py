@@ -535,53 +535,62 @@ def cf_setup(body: dict):
         pass
 
     # 5. Create proxied CNAME — update if the record already exists ───────────
+    # 5. Create proxied CNAME ─────────────────────────────────────────────────
+    # Note: when config_src="cloudflare" and ingress is configured (step 4),
+    # Cloudflare often auto-creates the CNAME. The POST may therefore fail with
+    # "record already exists". We always fall back to a lookup to confirm the
+    # record is present, and consider any existing CNAME a success.
     dns_ok    = False
     dns_error = None
+    _cname    = f"{tunnel_id}.cfargotunnel.com"
+
+    def _dns_verify():
+        """Return True if a CNAME for fqdn already exists in this zone."""
+        try:
+            rv = _httpx.get(
+                f"{_CF_API}/zones/{zone_id}/dns_records",
+                params={"name": fqdn, "type": "CNAME"},
+                headers=hdrs, timeout=10,
+            )
+            records = rv.json().get("result", [])
+            if records:
+                # Best-effort: update content to point at the new tunnel
+                _httpx.put(
+                    f"{_CF_API}/zones/{zone_id}/dns_records/{records[0]['id']}",
+                    headers=hdrs,
+                    json={"type": "CNAME", "name": subdomain,
+                          "content": _cname, "proxied": True, "ttl": 1},
+                    timeout=10,
+                )
+                return True
+        except Exception:
+            pass
+        return False
+
     try:
         r = _httpx.post(
             f"{_CF_API}/zones/{zone_id}/dns_records",
             headers=hdrs,
-            json={
-                "type":    "CNAME",
-                "name":    subdomain,
-                "content": f"{tunnel_id}.cfargotunnel.com",
-                "proxied": True,
-                "ttl":     1,
-            },
+            json={"type": "CNAME", "name": subdomain,
+                  "content": _cname, "proxied": True, "ttl": 1},
             timeout=15,
         )
         d = r.json()
         if d.get("success"):
             dns_ok = True
         else:
+            # POST failed — capture error then always check if record exists
             errs      = d.get("errors", [])
-            dns_error = errs[0].get("message") if errs else "DNS creation failed"
-            # If record already exists, find it and update in-place
-            if any("already exists" in (e.get("message", "")) for e in errs):
-                r2 = _httpx.get(
-                    f"{_CF_API}/zones/{zone_id}/dns_records",
-                    params={"name": fqdn, "type": "CNAME"},
-                    headers=hdrs, timeout=10,
-                )
-                records = r2.json().get("result", [])
-                if records:
-                    r3 = _httpx.put(
-                        f"{_CF_API}/zones/{zone_id}/dns_records/{records[0]['id']}",
-                        headers=hdrs,
-                        json={
-                            "type":    "CNAME",
-                            "name":    subdomain,
-                            "content": f"{tunnel_id}.cfargotunnel.com",
-                            "proxied": True,
-                            "ttl":     1,
-                        },
-                        timeout=10,
-                    )
-                    if r3.json().get("success"):
-                        dns_ok    = True
-                        dns_error = None
+            post_msg  = (errs[0].get("message") or "") if errs else ""
+            dns_error = post_msg or "DNS record creation failed"
+            if _dns_verify():
+                dns_ok    = True
+                dns_error = None   # record is there; don't warn
     except Exception as exc:
         dns_error = str(exc)
+        if _dns_verify():
+            dns_ok    = True
+            dns_error = None
 
     # 6. Persist everything ───────────────────────────────────────────────────
     _write_config({

@@ -1315,6 +1315,11 @@ def main() -> None:
     GRID_H  = H - TOPBAR_H - FOOTER_H    # calendar usable height
     SURF_H  = GRID_H                      # grid_surf covers only the calendar area; footer is separate
 
+    # Flag file written by the backend to blank the display without vcgencmd.
+    # Polled every frame so the response is near-instant (≤0.5 s at 2 FPS).
+    _DISPLAY_OFF_FLAG = Path("/opt/dashboard/.display_off")
+    _was_blanked = False   # track previous state so we force a full redraw on resume
+
     running = True
     while running:
         # ── Input ────────────────────────────────────────────────────────────
@@ -1325,6 +1330,22 @@ def main() -> None:
                 k = ev.key
                 if k == pygame.K_x and (ev.mod & pygame.KMOD_CTRL):
                     running = False
+
+        # ── Display-off flag: go black while the flag file exists ─────────────
+        if _DISPLAY_OFF_FLAG.exists():
+            if not _was_blanked:
+                screen.fill((0, 0, 0))
+                pygame.display.flip()
+                _was_blanked = True
+                # Invalidate caches so the first frame after wake is fresh.
+                grid_surf = topbar_surf = footer_surf = None
+            clock.tick(2)
+            continue   # skip all fetch / render logic while blanked
+
+        if _was_blanked:
+            # Just woke up — force all surfaces to be redrawn this frame.
+            grid_surf = topbar_surf = footer_surf = None
+            _was_blanked = False
 
         # ── Trigger stale fetches ─────────────────────────────────────────────
         _schedule_fetches()

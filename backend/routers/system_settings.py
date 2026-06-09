@@ -140,6 +140,9 @@ def get_display_config():
         "view":         cfg.get("display_view",         "week"),
         "weather_view": cfg.get("display_weather_view", "daily"),
         "custom_fqdn":  cfg.get("custom_fqdn",          ""),
+        # Flag-file check — display.py reads this and goes black when True.
+        # The flag file is also polled directly in display.py for instant response.
+        "display_off":  Path(_APP_DIR / ".display_off").exists(),
     }
 
 
@@ -405,21 +408,31 @@ def get_update_status():
 
 
 # ── Display Schedule ────────────────────────────────────────────────────────────
+#
+# vcgencmd display_power does NOT work under vc4-kms-v3d (the KMS driver used on
+# all Pi OS Bookworm installs).  The dpms sysfs node is read-only, and SDL's
+# kmsdrm backend holds DRM master so no other process can issue DRM ioctls.
+#
+# Solution: write a flag file that display.py polls every frame.  display.py owns
+# the display, so it blanks itself (solid black).  The flag file approach is:
+#   • Instant (display.py runs at 2 FPS, so ≤0.5 s lag)
+#   • Works with any driver — no kernel/firmware cooperation needed
+#   • No root / sudo required
+#
+_DISPLAY_OFF_FLAG = _APP_DIR / ".display_off"
 
-_disp_lock           = threading.Lock()
-_disp_applied: dict  = {"on": None}   # None = first tick; we track last applied state
+_disp_lock          = threading.Lock()
+_disp_applied: dict = {"on": None}   # None = first tick; track last applied state
 
 
-def _vcgencmd_display(on: bool) -> bool:
-    """Fire vcgencmd display_power 0/1. Returns True on success."""
-    import shutil
-    vcg = shutil.which("vcgencmd") or "/usr/bin/vcgencmd"
+def _set_display_power(on: bool) -> bool:
+    """Create or remove the flag file that signals display.py to go blank."""
     try:
-        r = subprocess.run(
-            [vcg, "display_power", "1" if on else "0"],
-            capture_output=True, text=True, timeout=5,
-        )
-        return r.returncode == 0
+        if on:
+            _DISPLAY_OFF_FLAG.unlink(missing_ok=True)
+        else:
+            _DISPLAY_OFF_FLAG.touch()
+        return True
     except Exception:
         return False
 
@@ -463,7 +476,7 @@ def _display_schedule_ticker():
             with _disp_lock:
                 if want != _disp_applied["on"]:
                     _disp_applied["on"] = want
-                    _vcgencmd_display(want)
+                    _set_display_power(want)
         except Exception:
             pass
         _time.sleep(60)
@@ -478,10 +491,11 @@ def get_display_schedule():
     cfg   = _read_config()
     sched = cfg.get("display_schedule", {})
     return {
-        "enabled":  sched.get("enabled",  False),
-        "on_time":  sched.get("on_time",  "07:00"),
-        "off_time": sched.get("off_time", "22:00"),
-        "days":     sched.get("days",     list(range(7))),
+        "enabled":      sched.get("enabled",  False),
+        "on_time":      sched.get("on_time",  "07:00"),
+        "off_time":     sched.get("off_time", "22:00"),
+        "days":         sched.get("days",     list(range(7))),
+        "display_is_off": _DISPLAY_OFF_FLAG.exists(),   # current live state
     }
 
 
@@ -504,9 +518,9 @@ def save_display_schedule(body: dict):
 
 @router.post("/display_schedule/power")
 def manual_display_power(body: dict):
-    """Immediately turn the display on or off (for testing or manual override)."""
+    """Immediately turn the display on or off via the flag-file mechanism."""
     on = bool(body.get("on", True))
-    ok = _vcgencmd_display(on)
+    ok = _set_display_power(on)
     with _disp_lock:
         _disp_applied["on"] = on
     return {"status": "on" if on else "off", "command_ok": ok}

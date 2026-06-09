@@ -2486,23 +2486,28 @@ function UpdateSettings() {
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function DisplayScheduleSettings() {
-  const [enabled,  setEnabled]  = useState(false);
-  const [onTime,   setOnTime]   = useState("07:00");
-  const [offTime,  setOffTime]  = useState("22:00");
-  const [days,     setDays]     = useState([0, 1, 2, 3, 4, 5, 6]);   // 0=Mon … 6=Sun
-  const [saving,   setSaving]   = useState(false);
-  const [powering, setPowering] = useState(false);
-  const [msg,      setMsg]      = useState(null);
-  const [error,    setError]    = useState(null);
+  const [enabled,    setEnabled]    = useState(false);
+  const [onTime,     setOnTime]     = useState("07:00");
+  const [offTime,    setOffTime]    = useState("22:00");
+  const [days,       setDays]       = useState([0, 1, 2, 3, 4, 5, 6]);   // 0=Mon … 6=Sun
+  const [displayOff, setDisplayOff] = useState(false);   // live state from Pi
+  const [saving,     setSaving]     = useState(false);
+  const [powering,   setPowering]   = useState(false);
+  const [msg,        setMsg]        = useState(null);
+  const [error,      setError]      = useState(null);
 
-  useEffect(() => {
-    api.get("/api/settings/display_schedule").then(res => {
+  const load = useCallback(async () => {
+    try {
+      const res = await api.get("/api/settings/display_schedule");
       setEnabled(!!res.data.enabled);
       setOnTime(res.data.on_time   || "07:00");
       setOffTime(res.data.off_time || "22:00");
       setDays(res.data.days        ?? [0, 1, 2, 3, 4, 5, 6]);
-    }).catch(() => {});
+      setDisplayOff(!!res.data.display_is_off);
+    } catch {}
   }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   const toggleDay = (d) =>
     setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort((a, b) => a - b));
@@ -2519,18 +2524,28 @@ function DisplayScheduleSettings() {
   const handlePower = async (on) => {
     setPowering(true); setMsg(null); setError(null);
     try {
-      const res = await api.post("/api/settings/display_schedule/power", { on });
-      setMsg(`Display turned ${res.data.status}${res.data.command_ok ? "" : " (command may not be available on this device)"}.`);
+      await api.post("/api/settings/display_schedule/power", { on });
+      setDisplayOff(!on);
+      setMsg(`Display turned ${on ? "on" : "off"} — screen updates within 1 second.`);
     } catch { setError("Power command failed."); }
     finally { setPowering(false); }
   };
 
   return (
     <Section icon={<AccessTimeIcon />} title="Display Schedule">
-      <Typography variant="body2" color="text.secondary">
-        Automatically turn the Pi&rsquo;s HDMI output off at night and back on in the morning.
-        Uses <Box component="span" sx={{ fontFamily: "monospace", bgcolor: "action.hover", px: 0.5, borderRadius: 0.5, fontSize: "0.78rem" }}>vcgencmd display_power</Box> — no reboot needed.
-      </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+        <Typography variant="body2" color="text.secondary">
+          Automatically blank the Pi display at night and restore it in the morning.
+          Works by signalling display.py directly — no driver or root access needed.
+        </Typography>
+        <Chip
+          size="small"
+          label={displayOff ? "Blanked" : "On"}
+          color={displayOff ? "default" : "success"}
+          variant={displayOff ? "outlined" : "filled"}
+          sx={{ flexShrink: 0 }}
+        />
+      </Box>
 
       {/* ── Enable toggle ────────────────────────────────────────────────── */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>

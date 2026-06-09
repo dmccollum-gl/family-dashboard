@@ -1763,6 +1763,16 @@ function TunnelSettings() {
       .catch(() => {});
   }, []);
 
+  // Pre-fill stored Cloudflare credentials
+  useEffect(() => {
+    api.get("/api/settings/cloudflare/credentials")
+      .then(res => {
+        if (res.data.account_id) setCfAccountId(res.data.account_id);
+        if (res.data.token_saved) setCfApiToken(MASKED);
+      })
+      .catch(() => {});
+  }, []);
+
   const handleFqdnSave = async () => {
     setFqdnSaving(true); setFqdnMsg(null);
     try {

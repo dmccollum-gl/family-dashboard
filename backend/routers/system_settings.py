@@ -331,13 +331,31 @@ def _cf_hdrs(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+@router.get("/cloudflare/credentials")
+def cf_get_credentials():
+    """Return stored Cloudflare credentials for pre-filling the UI."""
+    cfg = _read_config()
+    return {
+        "account_id":  cfg.get("cf_account_id", ""),
+        "token_saved": bool(cfg.get("cf_api_token", "")),
+    }
+
+
 @router.post("/cloudflare/verify")
 def cf_verify(body: dict):
     """Verify a Cloudflare API token and list zones for the given account."""
     import httpx as _httpx
 
+    cfg        = _read_config()
     api_token  = (body.get("api_token")  or "").strip()
     account_id = (body.get("account_id") or "").strip()
+
+    # Accept masked token (unchanged from what we sent on load) → use stored value
+    if not api_token or api_token == "••••••••":
+        api_token = cfg.get("cf_api_token", "")
+    if not account_id:
+        account_id = cfg.get("cf_account_id", "")
+
     if not api_token or not account_id:
         raise HTTPException(400, "api_token and account_id are required")
 

@@ -1834,7 +1834,7 @@ function TunnelSettings() {
       setToken("••••••••");
       setConfigured(true);
       setTimeout(() => load(), 4000); // refresh active status
-      setCfSetupMsg({ type: "success", fqdn: d.fqdn, dnsCreated: d.dns_created });
+      setCfSetupMsg({ type: "success", fqdn: d.fqdn, dnsCreated: d.dns_created, dnsError: d.dns_error });
     } catch (e) {
       const msg = e.response?.data?.detail || "Setup failed — check Pi logs for details.";
       setCfSetupMsg({ type: "error", text: msg });
@@ -2036,7 +2036,7 @@ function TunnelSettings() {
               <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "flex-start" }}>
                 <TextField
                   select label="Domain" size="small" sx={{ flex: 1, minWidth: 180 }}
-                  value={cfZoneId} onChange={e => setCfZoneId(e.target.value)}
+                  value={cfZoneId} onChange={e => { setCfZoneId(e.target.value); setCfSetupMsg(null); }}
                 >
                   {cfZones.map(z => (
                     <MenuItem key={z.id} value={z.id}>{z.name}</MenuItem>
@@ -2044,7 +2044,8 @@ function TunnelSettings() {
                 </TextField>
                 <TextField
                   label="Subdomain" size="small" sx={{ flex: 1, minWidth: 130 }}
-                  value={cfSubdomain} onChange={e => setCfSubdomain(e.target.value)}
+                  value={cfSubdomain}
+                  onChange={e => { setCfSubdomain(e.target.value); setCfSetupMsg(null); }}
                   placeholder="dashboard"
                   helperText={cfZoneId
                     ? `→ ${cfSubdomain || "dashboard"}.${cfZones.find(z => z.id === cfZoneId)?.name || ""}`
@@ -2052,7 +2053,8 @@ function TunnelSettings() {
                 />
                 <TextField
                   label="Tunnel Name" size="small" sx={{ flex: 1, minWidth: 160 }}
-                  value={cfTunnelName} onChange={e => setCfTunnelName(e.target.value)}
+                  value={cfTunnelName}
+                  onChange={e => { setCfTunnelName(e.target.value); setCfSetupMsg(null); }}
                   placeholder="family-dashboard"
                   helperText="Label shown in Cloudflare Zero Trust"
                 />
@@ -2072,14 +2074,25 @@ function TunnelSettings() {
                   <strong>Tunnel created!</strong> Your dashboard is now available at{" "}
                   <strong>https://{cfSetupMsg.fqdn}</strong>.
                   {!cfSetupMsg.dnsCreated && (
-                    <Box component="span" sx={{ display: "block", mt: 0.5, color: "warning.main" }}>
-                      ⚠ DNS record could not be created automatically — add a proxied CNAME manually in
-                      Cloudflare DNS: <code>{cfSubdomain}</code> → <code>…cfargotunnel.com</code>.
+                    <Box sx={{ mt: 0.5, color: "warning.dark" }}>
+                      ⚠ DNS record could not be created automatically
+                      {cfSetupMsg.dnsError ? ` (${cfSetupMsg.dnsError})` : ""}.
+                      Add a proxied CNAME in{" "}
+                      <a href={`https://dash.cloudflare.com/?to=/:account/${cfZones.find(z => z.id === cfZoneId)?.name || ""}/dns/records`}
+                         target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
+                        Cloudflare DNS
+                      </a>:{" "}
+                      <code>{cfSubdomain}</code> → <code>…cfargotunnel.com</code>
                     </Box>
                   )}
                   <Box sx={{ mt: 0.75 }}>
-                    <strong>Final step:</strong> add <code>https://{cfSetupMsg.fqdn}</code> as an
-                    Authorized JavaScript Origin in your Google Cloud OAuth client.
+                    <strong>Final step:</strong> add{" "}
+                    <code>https://{cfSetupMsg.fqdn}</code> as an Authorized JavaScript
+                    Origin in your{" "}
+                    <a href="https://console.cloud.google.com/apis/credentials"
+                       target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
+                      Google Cloud OAuth client ↗
+                    </a>
                   </Box>
                 </Alert>
               )}

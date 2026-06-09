@@ -403,11 +403,14 @@ def cf_verify(body: dict):
 def cf_setup(body: dict):
     """
     Full Cloudflare tunnel setup:
-      1. Create the tunnel
-      2. Configure API-managed ingress rules
-      3. Create a proxied CNAME DNS record
-      4. Save tunnel token + FQDN to Pi config
-      5. Start cloudflared
+      0. Tear down any previously-created tunnel + DNS record
+      1. Resolve zone name → build FQDN
+      2. Create the tunnel
+      3. Fetch connector token
+      4. Configure API-managed ingress rules
+      5. Create (or update) the proxied CNAME DNS record
+      6. Persist config
+      7. Start cloudflared
     """
     import httpx as _httpx
 
@@ -423,7 +426,45 @@ def cf_setup(body: dict):
 
     hdrs = _cf_hdrs(api_token)
 
-    # 1. Resolve zone name  → build FQDN
+    # 0. Tear down previous tunnel + DNS if this is a re-run ─────────────────
+    old_tid      = cfg.get("cf_tunnel_id", "")
+    old_fqdn     = cfg.get("custom_fqdn", "")
+    old_zone_id  = cfg.get("cf_zone_id", "")
+
+    if old_tid:
+        # Close active connections first (best-effort)
+        try:
+            _httpx.delete(
+                f"{_CF_API}/accounts/{account_id}/cfd_tunnel/{old_tid}/connections",
+                headers=hdrs, timeout=10,
+            )
+        except Exception:
+            pass
+        # Delete the old tunnel
+        try:
+            _httpx.delete(
+                f"{_CF_API}/accounts/{account_id}/cfd_tunnel/{old_tid}",
+                headers=hdrs, timeout=10,
+            )
+        except Exception:
+            pass
+        # Delete old DNS CNAME record
+        if old_fqdn and old_zone_id:
+            try:
+                r2 = _httpx.get(
+                    f"{_CF_API}/zones/{old_zone_id}/dns_records",
+                    params={"name": old_fqdn, "type": "CNAME"},
+                    headers=hdrs, timeout=10,
+                )
+                for rec in r2.json().get("result", []):
+                    _httpx.delete(
+                        f"{_CF_API}/zones/{old_zone_id}/dns_records/{rec['id']}",
+                        headers=hdrs, timeout=10,
+                    )
+            except Exception:
+                pass
+
+    # 1. Resolve zone name → build FQDN ──────────────────────────────────────
     try:
         r = _httpx.get(f"{_CF_API}/zones/{zone_id}", headers=hdrs, timeout=10)
         d = r.json()
@@ -437,7 +478,7 @@ def cf_setup(body: dict):
 
     fqdn = f"{subdomain}.{zone_name}"
 
-    # 2. Create tunnel
+    # 2. Create tunnel ────────────────────────────────────────────────────────
     try:
         r = _httpx.post(
             f"{_CF_API}/accounts/{account_id}/cfd_tunnel",
@@ -468,7 +509,7 @@ def cf_setup(body: dict):
     except Exception as exc:
         raise HTTPException(500, f"Failed to create tunnel: {exc}")
 
-    # 3. Fetch token separately if not returned by create
+    # 3. Fetch token separately if not returned by create ─────────────────────
     if not ttoken:
         try:
             r      = _httpx.get(
@@ -479,7 +520,7 @@ def cf_setup(body: dict):
         except Exception as exc:
             raise HTTPException(500, f"Tunnel created but could not fetch token: {exc}")
 
-    # 4. Configure API-managed ingress (non-fatal if fails)
+    # 4. Configure API-managed ingress (non-fatal) ────────────────────────────
     try:
         _httpx.put(
             f"{_CF_API}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations",
@@ -491,12 +532,13 @@ def cf_setup(body: dict):
             timeout=15,
         )
     except Exception:
-        pass  # non-fatal; tunnel still works
+        pass
 
-    # 5. Create proxied CNAME
-    dns_ok = False
+    # 5. Create proxied CNAME — update if the record already exists ───────────
+    dns_ok    = False
+    dns_error = None
     try:
-        r      = _httpx.post(
+        r = _httpx.post(
             f"{_CF_API}/zones/{zone_id}/dns_records",
             headers=hdrs,
             json={
@@ -504,15 +546,44 @@ def cf_setup(body: dict):
                 "name":    subdomain,
                 "content": f"{tunnel_id}.cfargotunnel.com",
                 "proxied": True,
-                "ttl":     1,  # automatic
+                "ttl":     1,
             },
             timeout=15,
         )
-        dns_ok = r.json().get("success", False)
-    except Exception:
-        pass
+        d = r.json()
+        if d.get("success"):
+            dns_ok = True
+        else:
+            errs      = d.get("errors", [])
+            dns_error = errs[0].get("message") if errs else "DNS creation failed"
+            # If record already exists, find it and update in-place
+            if any("already exists" in (e.get("message", "")) for e in errs):
+                r2 = _httpx.get(
+                    f"{_CF_API}/zones/{zone_id}/dns_records",
+                    params={"name": fqdn, "type": "CNAME"},
+                    headers=hdrs, timeout=10,
+                )
+                records = r2.json().get("result", [])
+                if records:
+                    r3 = _httpx.put(
+                        f"{_CF_API}/zones/{zone_id}/dns_records/{records[0]['id']}",
+                        headers=hdrs,
+                        json={
+                            "type":    "CNAME",
+                            "name":    subdomain,
+                            "content": f"{tunnel_id}.cfargotunnel.com",
+                            "proxied": True,
+                            "ttl":     1,
+                        },
+                        timeout=10,
+                    )
+                    if r3.json().get("success"):
+                        dns_ok    = True
+                        dns_error = None
+    except Exception as exc:
+        dns_error = str(exc)
 
-    # 6. Persist everything
+    # 6. Persist everything ───────────────────────────────────────────────────
     _write_config({
         "tunnel_token":  ttoken,
         "custom_fqdn":   fqdn,
@@ -522,7 +593,7 @@ def cf_setup(body: dict):
         "cf_tunnel_id":  tunnel_id,
     })
 
-    # 7. Start cloudflared
+    # 7. Start cloudflared ────────────────────────────────────────────────────
     threading.Thread(
         target=_after,
         args=(0.5, lambda: subprocess.run(
@@ -536,6 +607,7 @@ def cf_setup(body: dict):
         "fqdn":        fqdn,
         "tunnel_id":   tunnel_id,
         "dns_created": dns_ok,
+        "dns_error":   dns_error,
     }
 
 

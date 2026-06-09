@@ -421,12 +421,9 @@ def get_update_status():
 #
 _DISPLAY_OFF_FLAG = _APP_DIR / ".display_off"
 
-_disp_lock          = threading.Lock()
-_disp_applied: dict = {"on": None}   # None = first tick; track last applied state
-
 
 def _set_display_power(on: bool) -> bool:
-    """Create or remove the flag file that signals display.py to go blank."""
+    """Create or remove the flag file that signals display.py to blank the screen."""
     try:
         if on:
             _DISPLAY_OFF_FLAG.unlink(missing_ok=True)
@@ -467,19 +464,29 @@ def _should_display_be_on(sched: dict) -> bool:
 
 
 def _display_schedule_ticker():
-    """Background thread: enforce display on/off schedule, checked every 60 s."""
+    """Background thread: enforce display schedule at transition points only.
+
+    Sleeps first so startup never overrides a manual on/off action.
+    Only fires _set_display_power when the desired state *changes* (e.g.
+    crossing the 22:00 off-time or the 07:00 on-time).  Between transitions
+    the flag file is left alone, so manual overrides from the UI persist.
+    """
+    try:
+        cfg = _read_config()
+        last_want = _should_display_be_on(cfg.get("display_schedule", {}))
+    except Exception:
+        last_want = True   # safe default
+
     while True:
+        _time.sleep(60)   # sleep FIRST — don't touch display immediately on startup
         try:
-            cfg   = _read_config()
-            sched = cfg.get("display_schedule", {})
-            want  = _should_display_be_on(sched)
-            with _disp_lock:
-                if want != _disp_applied["on"]:
-                    _disp_applied["on"] = want
-                    _set_display_power(want)
+            cfg  = _read_config()
+            want = _should_display_be_on(cfg.get("display_schedule", {}))
+            if want != last_want:
+                last_want = want
+                _set_display_power(want)
         except Exception:
             pass
-        _time.sleep(60)
 
 
 # Start scheduler when the router module loads (daemon thread dies with the process)
@@ -491,10 +498,10 @@ def get_display_schedule():
     cfg   = _read_config()
     sched = cfg.get("display_schedule", {})
     return {
-        "enabled":      sched.get("enabled",  False),
-        "on_time":      sched.get("on_time",  "07:00"),
-        "off_time":     sched.get("off_time", "22:00"),
-        "days":         sched.get("days",     list(range(7))),
+        "enabled":        sched.get("enabled",  False),
+        "on_time":        sched.get("on_time",  "07:00"),
+        "off_time":       sched.get("off_time", "22:00"),
+        "days":           sched.get("days",     list(range(7))),
         "display_is_off": _DISPLAY_OFF_FLAG.exists(),   # current live state
     }
 
@@ -510,9 +517,6 @@ def save_display_schedule(body: dict):
             "days":     days,
         }
     })
-    # Force the scheduler to re-evaluate immediately on next tick
-    with _disp_lock:
-        _disp_applied["on"] = None
     return {"status": "saved"}
 
 
@@ -521,6 +525,4 @@ def manual_display_power(body: dict):
     """Immediately turn the display on or off via the flag-file mechanism."""
     on = bool(body.get("on", True))
     ok = _set_display_power(on)
-    with _disp_lock:
-        _disp_applied["on"] = on
     return {"status": "on" if on else "off", "command_ok": ok}

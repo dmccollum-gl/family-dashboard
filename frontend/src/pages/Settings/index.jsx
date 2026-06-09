@@ -37,6 +37,7 @@ import VisibilityOffIcon         from "@mui/icons-material/VisibilityOff";
 import OpenInNewIcon             from "@mui/icons-material/OpenInNew";
 import ExpandMoreIcon            from "@mui/icons-material/ExpandMore";
 import RouterIcon                from "@mui/icons-material/Router";
+import TravelExploreIcon        from "@mui/icons-material/TravelExplore";
 import SystemUpdateAltIcon       from "@mui/icons-material/SystemUpdateAlt";
 import AccessTimeIcon            from "@mui/icons-material/AccessTime";
 import PowerSettingsNewIcon      from "@mui/icons-material/PowerSettingsNew";
@@ -1724,6 +1725,8 @@ function TunnelSettings() {
   const [fqdn,        setFqdn]        = useState("");
   const [fqdnSaving,  setFqdnSaving]  = useState(false);
   const [fqdnMsg,     setFqdnMsg]     = useState(null);
+  const [detecting,   setDetecting]   = useState(false);
+  const [detectMsg,   setDetectMsg]   = useState(null);   // { type, text }
   const MASKED = "••••••••";
 
   const load = useCallback(async () => {
@@ -1748,6 +1751,29 @@ function TunnelSettings() {
       setFqdnMsg("Saved.");
     } catch { setFqdnMsg("error"); }
     finally { setFqdnSaving(false); }
+  };
+
+  const handleDetect = async () => {
+    setDetecting(true); setDetectMsg(null);
+    try {
+      const res = await api.get("/api/settings/fqdn/detect");
+      const { tailscale, cloudflare_tunnel_id } = res.data;
+      if (tailscale) {
+        setFqdn(tailscale);
+        setDetectMsg({ type: "success",
+          text: `Tailscale hostname detected: ${tailscale}. Click Save to apply.` });
+      } else if (cloudflare_tunnel_id) {
+        setDetectMsg({ type: "info",
+          text: "Cloudflare tunnel is configured. Enter your public hostname from the Cloudflare dashboard (e.g. dashboard.yourdomain.com)." });
+      } else {
+        setDetectMsg({ type: "warning",
+          text: "No hostname detected automatically. Neither Tailscale nor a Cloudflare tunnel is configured on this Pi." });
+      }
+    } catch {
+      setDetectMsg({ type: "error", text: "Detection failed — could not reach the Pi." });
+    } finally {
+      setDetecting(false);
+    }
   };
 
   useEffect(() => { load(); }, [load]);
@@ -1986,14 +2012,27 @@ function TunnelSettings() {
           placeholder="dashboard.yourdomain.com"
         />
         <Button
+          variant="outlined" size="small" sx={{ mt: 0.25 }}
+          startIcon={detecting ? <CircularProgress size={14} color="inherit" /> : <TravelExploreIcon />}
+          onClick={handleDetect}
+          disabled={detecting || fqdnSaving}
+        >
+          Auto-detect
+        </Button>
+        <Button
           variant="contained" size="small" sx={{ mt: 0.25 }}
           startIcon={fqdnSaving ? <CircularProgress size={14} color="inherit" /> : <SaveIcon />}
           onClick={handleFqdnSave}
-          disabled={fqdnSaving}
+          disabled={fqdnSaving || detecting}
         >
           Save
         </Button>
       </Box>
+      {detectMsg && (
+        <Alert severity={detectMsg.type} onClose={() => setDetectMsg(null)} sx={{ mt: 0.5 }}>
+          {detectMsg.text}
+        </Alert>
+      )}
       {fqdnMsg === "error" && (
         <Alert severity="error" onClose={() => setFqdnMsg(null)}>Failed to save hostname.</Alert>
       )}

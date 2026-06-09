@@ -279,6 +279,49 @@ def control_tunnel(action: str):
     return {"status": action + "ing"}
 
 
+# ── FQDN auto-detection ───────────────────────────────────────────────────────
+
+@router.get("/fqdn/detect")
+def detect_fqdn():
+    """Try to detect the Pi's public hostname from Tailscale or Cloudflare Tunnel."""
+    import shutil, json as _json, base64 as _b64
+
+    result: dict = {"tailscale": None, "cloudflare_tunnel_id": None}
+
+    # ── Tailscale ─────────────────────────────────────────────────────────────
+    ts = shutil.which("tailscale")
+    if ts:
+        try:
+            r = subprocess.run([ts, "status", "--json"],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                data = _json.loads(r.stdout)
+                dns = data.get("Self", {}).get("DNSName", "").rstrip(".")
+                if dns:
+                    result["tailscale"] = dns
+        except Exception:
+            pass
+
+    # ── Cloudflare Tunnel — decode JWT to confirm a tunnel is configured ───────
+    # The tunnel token doesn't encode the public hostname (that lives in
+    # Cloudflare's dashboard), but we can extract the tunnel ID as confirmation.
+    cfg   = _read_config()
+    token = cfg.get("tunnel_token", "")
+    if token:
+        try:
+            parts = token.split(".")
+            if len(parts) >= 2:
+                pad     = parts[1] + "=" * (-len(parts[1]) % 4)
+                payload = _json.loads(_b64.b64decode(pad))
+                tid     = payload.get("t") or payload.get("tunnel_id")
+                if tid:
+                    result["cloudflare_tunnel_id"] = str(tid)
+        except Exception:
+            pass
+
+    return result
+
+
 # ── Software Update ────────────────────────────────────────────────────────────
 
 _APP_DIR     = Path("/opt/dashboard")

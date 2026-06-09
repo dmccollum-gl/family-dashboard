@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Box, Typography, Button, Divider, Alert, TextField,
-  CircularProgress, List, ListItem, Avatar, Chip, Menu, MenuItem,
+  CircularProgress, LinearProgress, List, ListItem, Avatar, Chip, Menu, MenuItem,
   Dialog, DialogTitle, DialogContent, DialogActions,
   Switch, ListItemText, ListItemIcon, IconButton, Tooltip,
   Checkbox, Radio, RadioGroup, FormControlLabel, FormControl, FormLabel,
@@ -2625,6 +2625,40 @@ function PermissionsSettings({ currentRole }) {
   );
 }
 
+// ── Software Updates helpers ──────────────────────────────────────────────────
+
+const _UPDATE_STAGES = [
+  { re: /Family Dashboard Update/i,                                          label: "Starting update…",            pct: 5  },
+  { re: /Pulling from GitHub/i,                                              label: "Pulling from GitHub…",        pct: 12 },
+  { re: /remote:|Enumerating|Counting|Compressing|Receiving|Resolving/i,    label: "Downloading changes…",        pct: 22 },
+  { re: /Already up to date|Updating [0-9a-f]+\.\./i,                       label: "Code pulled…",                pct: 30 },
+  { re: /Running setup\.sh/i,                                               label: "Running setup script…",       pct: 36 },
+  { re: /Installing system packages/i,                                       label: "Installing system packages…", pct: 43 },
+  { re: /Creating.*user/i,                                                   label: "Configuring user account…",   pct: 50 },
+  { re: /Installing application files/i,                                     label: "Copying application files…",  pct: 57 },
+  { re: /Python virtual environment|pip install|venv/i,                      label: "Installing Python packages…", pct: 63 },
+  { re: /Python packages installed|Successfully installed/i,                 label: "Python packages ready…",      pct: 70 },
+  { re: /Installing cloudflared/i,                                           label: "Checking cloudflared…",       pct: 74 },
+  { re: /Configuring nginx/i,                                                label: "Configuring web server…",     pct: 78 },
+  { re: /Configuring sudoers/i,                                              label: "Configuring permissions…",    pct: 82 },
+  { re: /Installing systemd/i,                                               label: "Configuring services…",       pct: 86 },
+  { re: /Starting services/i,                                                label: "Starting services…",          pct: 91 },
+  { re: /Backend started|Display started/i,                                  label: "Services restarting…",        pct: 95 },
+  { re: /Update complete/i,                                                  label: "Update complete",             pct: 100 },
+];
+
+function parseUpdateProgress(logs) {
+  let best = { label: "Preparing…", pct: 2 };
+  for (const line of logs) {
+    for (const stage of _UPDATE_STAGES) {
+      if (stage.pct >= best.pct && stage.re.test(line)) {
+        best = { label: stage.label, pct: stage.pct };
+      }
+    }
+  }
+  return best;
+}
+
 // ── Software Updates (owner-only) ─────────────────────────────────────────────
 
 function UpdateSettings() {
@@ -2738,6 +2772,16 @@ function UpdateSettings() {
 
   const isGitInstall = version?.installed;
 
+  // Progress bar data
+  const _prog      = parseUpdateProgress(status?.log || []);
+  const _failed    = status?.success === false;
+  const _done      = !applying && !_failed && status !== null;
+  const _progPct   = _done ? 100 : _prog.pct;
+  const _progColor = _failed ? "error" : _done ? "success" : "primary";
+  const _progLabel = _failed ? `Stopped at: ${_prog.label.replace("…", "")}` :
+                     _done   ? (_prog.pct >= 100 ? "Update complete ✓" : "Finishing up ✓") :
+                     _prog.label;
+
   return (
     <Section icon={<SystemUpdateAltIcon />} title="Software Updates">
       <Typography variant="body2" color="text.secondary">
@@ -2841,33 +2885,49 @@ function UpdateSettings() {
       {(applying || status !== null) && (
         <Box>
           {status?.restarted && (
-            <Alert severity="success" sx={{ mb: 1 }} onClose={() => setStatus(null)}>
+            <Alert severity="success" sx={{ mb: 1.5 }} onClose={() => setStatus(null)}>
               Update applied — backend restarted with new code.
             </Alert>
           )}
           {!status?.restarted && status?.success === true && (
-            <Alert severity="success" sx={{ mb: 1 }} onClose={() => setStatus(null)}>
+            <Alert severity="success" sx={{ mb: 1.5 }} onClose={() => setStatus(null)}>
               Update complete! The backend is restarting.
             </Alert>
           )}
           {!status?.restarted && status?.success === false && (
-            <Alert severity="error" sx={{ mb: 1 }}>
+            <Alert severity="error" sx={{ mb: 1.5 }}>
               Update failed (exit code {status.exit_code}). See the log below.
             </Alert>
           )}
 
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-            <Typography variant="body2" fontWeight={500} color={applying ? "primary.main" : "text.primary"}>
-              {applying ? (
-                <Box component="span" sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-                  <CircularProgress size={14} />
-                  Update in progress…
-                </Box>
-              ) : "Update log"}
+          {/* ── Progress bar ──────────────────────────────────────────── */}
+          <Box sx={{ mb: 1.5 }}>
+            <Box sx={{ display: "flex", justifyContent: "space-between",
+                       alignItems: "baseline", mb: 0.75 }}>
+              <Typography variant="body2" fontWeight={500}
+                color={`${_progColor}.main`}>
+                {_progLabel}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {_progPct}%
+              </Typography>
+            </Box>
+            <LinearProgress
+              variant="determinate"
+              value={_progPct}
+              color={_progColor}
+              sx={{ height: 8, borderRadius: 4 }}
+            />
+          </Box>
+
+          {/* ── Log toggle ────────────────────────────────────────────── */}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              Update log
             </Typography>
             <Button size="small" sx={{ py: 0, minHeight: 0 }}
               onClick={() => setShowLog(v => !v)}>
-              {showLog ? "Hide" : "Show"} log
+              {showLog ? "Hide" : "Show"}
             </Button>
           </Box>
 

@@ -1737,6 +1737,7 @@ function TunnelSettings() {
   const [cfTunnelName, setCfTunnelName] = useState("family-dashboard");
   const [cfVerifying,  setCfVerifying]  = useState(false);
   const [cfSetting,    setCfSetting]    = useState(false);
+  const [cfTunnelOk,   setCfTunnelOk]   = useState(false); // token has Tunnel:Edit permission
   const [cfVerifyMsg,  setCfVerifyMsg]  = useState(null); // { type, text }
   const [cfSetupMsg,   setCfSetupMsg]   = useState(null); // { type, text?, fqdn?, dnsCreated? }
   const MASKED = "••••••••";
@@ -1789,7 +1790,7 @@ function TunnelSettings() {
   };
 
   const handleCfVerify = async () => {
-    setCfVerifying(true); setCfVerifyMsg(null);
+    setCfVerifying(true); setCfVerifyMsg(null); setCfTunnelOk(false);
     try {
       const res = await api.post("/api/settings/cloudflare/verify", {
         api_token:  cfApiToken.trim(),
@@ -1802,9 +1803,13 @@ function TunnelSettings() {
         const zones = d.zones || [];
         setCfZones(zones);
         if (zones.length > 0 && !cfZoneId) setCfZoneId(zones[0].id);
-        setCfVerifyMsg(d.error
-          ? { type: "warning", text: d.error }
-          : { type: "success", text: `Token verified — ${zones.length} domain(s) found.` });
+        if (d.tunnel_ok === false) {
+          // Zones loaded but missing Cloudflare Tunnel: Edit permission
+          setCfVerifyMsg({ type: "error", text: d.error });
+        } else {
+          setCfTunnelOk(true);
+          setCfVerifyMsg({ type: "success", text: `Token verified — ${zones.length} domain(s) found.` });
+        }
       }
     } catch {
       setCfVerifyMsg({ type: "error", text: "Verification failed — could not reach the Pi." });
@@ -2057,7 +2062,7 @@ function TunnelSettings() {
                   variant="contained" size="small"
                   startIcon={cfSetting ? <CircularProgress size={14} color="inherit" /> : <AutoFixHighIcon />}
                   onClick={handleCfSetup}
-                  disabled={cfSetting || cfVerifying || !cfZoneId || !cfSubdomain.trim()}
+                  disabled={cfSetting || cfVerifying || !cfZoneId || !cfSubdomain.trim() || !cfTunnelOk}
                 >
                   {cfSetting ? "Creating tunnel…" : "Create Tunnel & DNS Record"}
                 </Button>
@@ -2496,6 +2501,12 @@ function UpdateSettings() {
           stopPolling();
           setApplying(false);
           loadVersion();
+          // Auto-recheck so the "pending" list clears immediately
+          setChecking(true); setCheckResult(null);
+          api.get("/api/settings/update/check")
+            .then(r => setCheckResult(r.data))
+            .catch(e => setCheckResult({ error: e?.response?.data?.detail || "Check failed." }))
+            .finally(() => setChecking(false));
         }
       } catch {
         failCount++;
@@ -2508,6 +2519,14 @@ function UpdateSettings() {
             : { running: false, restarted: true, log: [] }
           );
           loadVersion();
+          // Backend just restarted — wait a few seconds before rechecking
+          setTimeout(() => {
+            setChecking(true); setCheckResult(null);
+            api.get("/api/settings/update/check")
+              .then(r => setCheckResult(r.data))
+              .catch(e => setCheckResult({ error: e?.response?.data?.detail || "Check failed." }))
+              .finally(() => setChecking(false));
+          }, 5000);
         }
       }
     }, 2500);

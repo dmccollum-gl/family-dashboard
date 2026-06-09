@@ -369,10 +369,34 @@ def cf_verify(body: dict):
     except Exception as exc:
         return {"valid": True, "zones": [], "error": str(exc)}
 
+    # 3. Check Cloudflare Tunnel permissions (requires "Cloudflare Tunnel: Edit")
+    tunnel_ok = False
+    try:
+        r = _httpx.get(
+            f"{_CF_API}/accounts/{account_id}/cfd_tunnel",
+            params={"per_page": 1},
+            headers=hdrs, timeout=10,
+        )
+        tunnel_ok = r.json().get("success", False)
+    except Exception:
+        pass
+
+    if not tunnel_ok:
+        return {
+            "valid":      True,
+            "zones":      zones,
+            "tunnel_ok":  False,
+            "error": (
+                "Zones loaded but this token cannot manage tunnels. "
+                "Edit the token in Cloudflare → My Profile → API Tokens and add "
+                "the 'Cloudflare Tunnel: Edit' permission, then verify again."
+            ),
+        }
+
     # Persist so /setup can reuse without re-sending credentials
     _write_config({"cf_api_token": api_token, "cf_account_id": account_id})
 
-    return {"valid": True, "zones": zones}
+    return {"valid": True, "zones": zones, "tunnel_ok": True}
 
 
 @router.post("/cloudflare/setup")
@@ -424,7 +448,17 @@ def cf_setup(body: dict):
         d = r.json()
         if not d.get("success"):
             errs = d.get("errors", [])
-            msg  = errs[0].get("message") if errs else "Failed to create tunnel"
+            raw  = errs[0].get("message") if errs else "Failed to create tunnel"
+            code = errs[0].get("code", 0)  if errs else 0
+            if code in (10000, 10001) or "auth" in raw.lower():
+                msg = (
+                    "Authentication error — the token does not have "
+                    "'Cloudflare Tunnel: Edit' permission. "
+                    "Update the token at Cloudflare → My Profile → API Tokens, "
+                    "then re-verify."
+                )
+            else:
+                msg = raw
             raise HTTPException(500, msg)
         tunnel    = d["result"]
         tunnel_id = tunnel["id"]

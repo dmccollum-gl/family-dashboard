@@ -1991,7 +1991,7 @@ function TunnelSettings() {
           <Box component="ol" sx={{ m: 0, pl: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
             {[
               { text: "In your Cloudflare dashboard → Zero Trust → Networks → Tunnels → Create a tunnel. Choose Cloudflared, give it a name, and copy the tunnel token." },
-              { text: "Paste the token into the Cloudflare Tunnel Service form below, click Save Token, then Start Tunnel." },
+              { text: "Paste the token into the Manual Token field in the Cloudflare Tunnel section below, click Save Token, then Start Tunnel." },
               { text: "Back in Cloudflare → your tunnel → Public Hostname → Add a hostname:", code: "Subdomain: dashboard  (or your choice)\nDomain:    yourdomain.com\nService:   HTTP  →  localhost:80" },
               { text: "In Google Cloud Console → Credentials, edit your OAuth client. Under Authorized JavaScript origins → Add URI:", code: "https://dashboard.yourdomain.com" },
               { text: "Click Save (Google takes a few minutes to propagate)." },
@@ -2015,171 +2015,156 @@ function TunnelSettings() {
         </AccordionDetails>
       </Accordion>
 
-      {/* ── Cloudflare Auto-Setup ────────────────────────────────────────────── */}
-      <Accordion disableGutters elevation={0} sx={{
-        border: "1px solid", borderColor: "primary.main", borderRadius: "6px !important",
-        "&:before": { display: "none" },
-      }}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 44, "& .MuiAccordionSummary-content": { my: 0.75 } }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <Chip size="small" label="Automated" color="primary" sx={{ fontSize: "0.65rem", height: 18 }} />
-            <Typography variant="body2" fontWeight={600}>Cloudflare Auto-Setup (API)</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails sx={{ pt: 0, pb: 2, display: "flex", flexDirection: "column", gap: 1.5 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-            Provide a Cloudflare API token and your Account ID and the dashboard will create the
-            tunnel, configure ingress, and add the DNS record automatically.
-            Requires a token with <strong>Cloudflare Tunnel: Edit</strong> and <strong>DNS: Edit</strong> permissions.{" "}
-            <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer"
-               style={{ color: "inherit" }}>Create a token →</a>
-          </Typography>
+      {/* ── Cloudflare Tunnel (combined auto-setup + service) ──────────────────── */}
+      <Divider sx={{ mt: 1 }} />
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
+        <Typography variant="body2" fontWeight={600}>Cloudflare Tunnel</Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Chip
+            size="small"
+            label={active ? "Active" : "Inactive"}
+            color={active ? "success" : "default"}
+            variant={active ? "filled" : "outlined"}
+          />
+          <Tooltip title="Refresh status">
+            <IconButton size="small" onClick={load}><RefreshIcon fontSize="small" /></IconButton>
+          </Tooltip>
+        </Box>
+      </Box>
 
-          {/* Step 1 — credentials */}
-          <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
+      <Alert severity="info" icon={false} sx={{ py: 0.75 }}>
+        <strong>cloudflared is pre-installed</strong> on this Pi image — no manual install needed.
+        Use Auto-Setup to create a tunnel via the Cloudflare API, or paste a token manually below.
+      </Alert>
+
+      {/* ── Auto-Setup ─────────────────────────────────────────── */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <Typography variant="caption" color="text.secondary" fontWeight={700} sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}>
+          Auto-Setup
+        </Typography>
+        <Divider sx={{ flex: 1 }} />
+      </Box>
+
+      <Typography variant="caption" color="text.secondary">
+        Requires a Cloudflare API token with <strong>Cloudflare Tunnel: Edit</strong> and{" "}
+        <strong>DNS: Edit</strong> permissions.{" "}
+        <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer"
+           style={{ color: "inherit" }}>Create a token →</a>
+      </Typography>
+
+      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
+        <TextField
+          label="Cloudflare API Token" size="small" type="password"
+          sx={{ flex: 2, minWidth: 220 }}
+          value={cfApiToken} onChange={e => setCfApiToken(e.target.value)}
+          placeholder="Paste token…"
+          helperText="dash.cloudflare.com → My Profile → API Tokens"
+        />
+        <TextField
+          label="Account ID" size="small"
+          sx={{ flex: 1, minWidth: 180 }}
+          value={cfAccountId} onChange={e => setCfAccountId(e.target.value)}
+          placeholder="32-char hex"
+          helperText="Cloudflare dashboard → right sidebar"
+        />
+      </Box>
+
+      <Box>
+        <Button
+          variant="outlined" size="small"
+          startIcon={cfVerifying ? <CircularProgress size={14} color="inherit" /> : <TravelExploreIcon />}
+          onClick={handleCfVerify}
+          disabled={cfVerifying || cfSetting || !cfApiToken.trim() || !cfAccountId.trim()}
+        >
+          Verify &amp; Load Domains
+        </Button>
+      </Box>
+
+      {cfVerifyMsg && (
+        <Alert severity={cfVerifyMsg.type} onClose={() => setCfVerifyMsg(null)} sx={{ py: 0.5 }}>
+          {cfVerifyMsg.text}
+        </Alert>
+      )}
+
+      {cfZones.length > 0 && (
+        <>
+          <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "flex-start" }}>
             <TextField
-              label="Cloudflare API Token" size="small"
-              type="password"
-              sx={{ flex: 2, minWidth: 220 }}
-              value={cfApiToken} onChange={e => setCfApiToken(e.target.value)}
-              placeholder="Starts with …"
-              helperText={<>dash.cloudflare.com → My Profile → API Tokens</>}
+              select label="Domain" size="small" sx={{ flex: 1, minWidth: 180 }}
+              value={cfZoneId} onChange={e => { setCfZoneId(e.target.value); setCfSetupMsg(null); }}
+            >
+              {cfZones.map(z => <MenuItem key={z.id} value={z.id}>{z.name}</MenuItem>)}
+            </TextField>
+            <TextField
+              label="Subdomain" size="small" sx={{ flex: 1, minWidth: 130 }}
+              value={cfSubdomain}
+              onChange={e => { setCfSubdomain(e.target.value); setCfSetupMsg(null); }}
+              placeholder="dashboard"
+              helperText={cfZoneId ? `→ ${cfSubdomain || "dashboard"}.${cfZones.find(z => z.id === cfZoneId)?.name || ""}` : ""}
             />
             <TextField
-              label="Account ID" size="small"
-              sx={{ flex: 1, minWidth: 180 }}
-              value={cfAccountId} onChange={e => setCfAccountId(e.target.value)}
-              placeholder="32-char hex"
-              helperText={<>Cloudflare dashboard URL → right-hand side</>}
+              label="Tunnel Name" size="small" sx={{ flex: 1, minWidth: 160 }}
+              value={cfTunnelName}
+              onChange={e => { setCfTunnelName(e.target.value); setCfSetupMsg(null); }}
+              placeholder="family-dashboard"
+              helperText="Label shown in Cloudflare Zero Trust"
             />
           </Box>
           <Box>
             <Button
-              variant="outlined" size="small"
-              startIcon={cfVerifying ? <CircularProgress size={14} color="inherit" /> : <TravelExploreIcon />}
-              onClick={handleCfVerify}
-              disabled={cfVerifying || cfSetting || !cfApiToken.trim() || !cfAccountId.trim()}
+              variant="contained" size="small"
+              startIcon={cfSetting ? <CircularProgress size={14} color="inherit" /> : <AutoFixHighIcon />}
+              onClick={handleCfSetup}
+              disabled={cfSetting || cfVerifying || !cfZoneId || !cfSubdomain.trim() || !cfTunnelOk}
             >
-              Verify &amp; Load Domains
+              {cfSetting ? "Creating tunnel…" : "Create Tunnel & DNS Record"}
             </Button>
           </Box>
-          {cfVerifyMsg && (
-            <Alert severity={cfVerifyMsg.type} onClose={() => setCfVerifyMsg(null)} sx={{ py: 0.5 }}>
-              {cfVerifyMsg.text}
+          {cfSetupMsg && cfSetupMsg.type === "success" && (
+            <Alert severity="success" sx={{ py: 0.5 }}>
+              <strong>Tunnel created!</strong> Your dashboard is now available at{" "}
+              <strong>https://{cfSetupMsg.fqdn}</strong>.
+              {!cfSetupMsg.dnsCreated && (
+                <Box sx={{ mt: 0.5, color: "warning.dark" }}>
+                  ⚠ DNS record could not be created automatically
+                  {cfSetupMsg.dnsError ? ` (${cfSetupMsg.dnsError})` : ""}. Add a proxied CNAME in{" "}
+                  <a href={`https://dash.cloudflare.com/?to=/:account/${cfZones.find(z => z.id === cfZoneId)?.name || ""}/dns/records`}
+                     target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>Cloudflare DNS</a>:{" "}
+                  <code>{cfSubdomain}</code> → <code>…cfargotunnel.com</code>
+                </Box>
+              )}
+              <Box sx={{ mt: 0.75 }}>
+                <strong>Final step:</strong> add <code>https://{cfSetupMsg.fqdn}</code> as an
+                Authorized JavaScript Origin in your{" "}
+                <a href="https://console.cloud.google.com/apis/credentials"
+                   target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
+                  Google Cloud OAuth client ↗
+                </a>
+              </Box>
             </Alert>
           )}
-
-          {/* Step 2 — domain + subdomain (only after zones loaded) */}
-          {cfZones.length > 0 && (
-            <>
-              <Divider />
-              <Typography variant="body2" fontWeight={500}>Configure your hostname</Typography>
-              <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "flex-start" }}>
-                <TextField
-                  select label="Domain" size="small" sx={{ flex: 1, minWidth: 180 }}
-                  value={cfZoneId} onChange={e => { setCfZoneId(e.target.value); setCfSetupMsg(null); }}
-                >
-                  {cfZones.map(z => (
-                    <MenuItem key={z.id} value={z.id}>{z.name}</MenuItem>
-                  ))}
-                </TextField>
-                <TextField
-                  label="Subdomain" size="small" sx={{ flex: 1, minWidth: 130 }}
-                  value={cfSubdomain}
-                  onChange={e => { setCfSubdomain(e.target.value); setCfSetupMsg(null); }}
-                  placeholder="dashboard"
-                  helperText={cfZoneId
-                    ? `→ ${cfSubdomain || "dashboard"}.${cfZones.find(z => z.id === cfZoneId)?.name || ""}`
-                    : ""}
-                />
-                <TextField
-                  label="Tunnel Name" size="small" sx={{ flex: 1, minWidth: 160 }}
-                  value={cfTunnelName}
-                  onChange={e => { setCfTunnelName(e.target.value); setCfSetupMsg(null); }}
-                  placeholder="family-dashboard"
-                  helperText="Label shown in Cloudflare Zero Trust"
-                />
-              </Box>
-              <Box>
-                <Button
-                  variant="contained" size="small"
-                  startIcon={cfSetting ? <CircularProgress size={14} color="inherit" /> : <AutoFixHighIcon />}
-                  onClick={handleCfSetup}
-                  disabled={cfSetting || cfVerifying || !cfZoneId || !cfSubdomain.trim() || !cfTunnelOk}
-                >
-                  {cfSetting ? "Creating tunnel…" : "Create Tunnel & DNS Record"}
-                </Button>
-              </Box>
-              {cfSetupMsg && cfSetupMsg.type === "success" && (
-                <Alert severity="success" sx={{ py: 0.5 }}>
-                  <strong>Tunnel created!</strong> Your dashboard is now available at{" "}
-                  <strong>https://{cfSetupMsg.fqdn}</strong>.
-                  {!cfSetupMsg.dnsCreated && (
-                    <Box sx={{ mt: 0.5, color: "warning.dark" }}>
-                      ⚠ DNS record could not be created automatically
-                      {cfSetupMsg.dnsError ? ` (${cfSetupMsg.dnsError})` : ""}.
-                      Add a proxied CNAME in{" "}
-                      <a href={`https://dash.cloudflare.com/?to=/:account/${cfZones.find(z => z.id === cfZoneId)?.name || ""}/dns/records`}
-                         target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
-                        Cloudflare DNS
-                      </a>:{" "}
-                      <code>{cfSubdomain}</code> → <code>…cfargotunnel.com</code>
-                    </Box>
-                  )}
-                  <Box sx={{ mt: 0.75 }}>
-                    <strong>Final step:</strong> add{" "}
-                    <code>https://{cfSetupMsg.fqdn}</code> as an Authorized JavaScript
-                    Origin in your{" "}
-                    <a href="https://console.cloud.google.com/apis/credentials"
-                       target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
-                      Google Cloud OAuth client ↗
-                    </a>
-                  </Box>
-                </Alert>
-              )}
-              {cfSetupMsg && cfSetupMsg.type === "error" && (
-                <Alert severity="error" onClose={() => setCfSetupMsg(null)} sx={{ py: 0.5 }}>
-                  {cfSetupMsg.text}
-                </Alert>
-              )}
-            </>
+          {cfSetupMsg && cfSetupMsg.type === "error" && (
+            <Alert severity="error" onClose={() => setCfSetupMsg(null)} sx={{ py: 0.5 }}>
+              {cfSetupMsg.text}
+            </Alert>
           )}
-        </AccordionDetails>
-      </Accordion>
+        </>
+      )}
 
-      {/* ── Cloudflare Tunnel Service ─────────────────────────────────────────── */}
-      <Divider sx={{ mt: 1 }} />
-      <Typography variant="body2" fontWeight={600} gutterBottom>
-        Cloudflare Tunnel Service
-      </Typography>
-      <Alert severity="info" icon={false} sx={{ py: 0.75 }}>
-        <strong>cloudflared is pre-installed</strong> on this Pi image — no manual install needed.
-        Paste the tunnel token from the Cloudflare dashboard (Step 1 above) to connect this Pi to
-        your Cloudflare network.
-      </Alert>
-
-      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-        <Typography variant="body2" fontWeight={500}>Tunnel status:</Typography>
-        <Chip
-          size="small"
-          label={active ? "Active" : "Inactive"}
-          color={active ? "success" : "default"}
-          variant={active ? "filled" : "outlined"}
-        />
-        <Tooltip title="Refresh status">
-          <IconButton size="small" onClick={load}>
-            <RefreshIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
+      {/* ── Manual Token ─────────────────────────────────────── */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <Typography variant="caption" color="text.secondary" fontWeight={700} sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}>
+          Manual Token
+        </Typography>
+        <Divider sx={{ flex: 1 }} />
       </Box>
 
       <TextField
         label="Tunnel Token" size="small" fullWidth
         type={showToken ? "text" : "password"}
-        value={token}
-        onChange={e => setToken(e.target.value)}
+        value={token} onChange={e => setToken(e.target.value)}
         placeholder="eyJhIjoixxxxxxxxxxxxxxxxxxxxxxxx…"
-        helperText="Cloudflare dashboard → Zero Trust → Networks → Tunnels → your tunnel → Configure → Token"
+        helperText="Cloudflare → Zero Trust → Networks → Tunnels → your tunnel → Configure → Token"
         InputProps={{
           endAdornment: (
             <InputAdornment position="end">

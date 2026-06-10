@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <style>
+    .card { fill: #ffffff; stroke: #c8d0da; stroke-width: 1.5; rx: 10; }
+    .pi   { fill: #fbf7ef; stroke: #d8b878; stroke-width: 2; }
+    .ext  { fill: #eef4ff; stroke: #9bb8e6; stroke-width: 1.5; }
+    .title{ font-size: 15px; font-weight: 700; fill: #1d2530; }
+    .lbl  { font-size: 12.5px; fill: #2c3744; }
+    .sub  { font-size: 11px; fill: #66727f; }
+    .edge { stroke: #97a3b0; stroke-width: 1.6; fill: none; }
+    .edgelbl { font-size: 10.5px; fill: #66727f; }
+    .hdr  { font-size: 13px; font-weight: 700; fill: #8a6d3b; }
+  </style>
+
+  <!-- arrowhead -->
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 z" fill="#97a3b0"/>
+    </marker>
+  </defs>
+
+  <!-- Family devices -->
+  <rect class="card" x="24" y="150" width="150" height="110" rx="10"/>
+  <text class="title" x="99" y="180" text-anchor="middle">Family</text>
+  <text class="lbl"   x="99" y="202" text-anchor="middle">Phones · Laptops</text>
+  <text class="sub"   x="99" y="224" text-anchor="middle">Sign in with Google</text>
+  <text class="sub"   x="99" y="240" text-anchor="middle">Manage settings</text>
+
+  <!-- Raspberry Pi -->
+  <rect class="pi" x="266" y="70" width="240" height="280" rx="12"/>
+  <text class="hdr" x="386" y="98" text-anchor="middle">Raspberry Pi</text>
+
+  <rect class="card" x="288" y="116" width="196" height="46" rx="8"/>
+  <text class="lbl" x="386" y="140" text-anchor="middle">nginx  ·  serves web app</text>
+  <text class="sub" x="386" y="155" text-anchor="middle">port 80 → proxies /api</text>
+
+  <rect class="card" x="288" y="176" width="196" height="46" rx="8"/>
+  <text class="lbl" x="386" y="200" text-anchor="middle">FastAPI backend</text>
+  <text class="sub" x="386" y="215" text-anchor="middle">uvicorn · port 8001</text>
+
+  <rect class="card" x="288" y="236" width="92" height="46" rx="8"/>
+  <text class="lbl" x="334" y="260" text-anchor="middle">SQLite</text>
+  <text class="sub" x="334" y="275" text-anchor="middle">users</text>
+
+  <rect class="card" x="392" y="236" width="92" height="46" rx="8"/>
+  <text class="lbl" x="438" y="260" text-anchor="middle">Pygame</text>
+  <text class="sub" x="438" y="275" text-anchor="middle">kiosk</text>
+
+  <!-- HDMI display -->
+  <rect class="card" x="266" y="372" width="240" height="34" rx="8"/>
+  <text class="lbl" x="386" y="394" text-anchor="middle">HDMI wall display (calendar · weather · news)</text>
+
+  <!-- External services -->
+  <rect class="ext" x="586" y="96" width="150" height="86" rx="10"/>
+  <text class="title" x="661" y="124" text-anchor="middle">Google</text>
+  <text class="sub"   x="661" y="146" text-anchor="middle">Calendar API</text>
+  <text class="sub"   x="661" y="162" text-anchor="middle">OAuth sign-in</text>
+
+  <rect class="ext" x="586" y="226" width="150" height="86" rx="10"/>
+  <text class="title" x="661" y="254" text-anchor="middle">Cloudflare</text>
+  <text class="sub"   x="661" y="276" text-anchor="middle">Tunnel (optional)</text>
+  <text class="sub"   x="661" y="292" text-anchor="middle">secure remote access</text>
+
+  <!-- Edges -->
+  <path class="edge" d="M174,205 L262,160" marker-end="url(#arrow)"/>
+  <text class="edgelbl" x="205" y="176">Wi-Fi / LAN</text>
+
+  <path class="edge" d="M386,162 L386,176" marker-end="url(#arrow)"/>
+  <path class="edge" d="M334,222 L334,236" marker-end="url(#arrow)"/>
+  <path class="edge" d="M438,222 L438,236" marker-end="url(#arrow)"/>
+  <path class="edge" d="M438,282 L438,372" marker-end="url(#arrow)"/>
+
+  <path class="edge" d="M506,150 L582,140" marker-end="url(#arrow)"/>
+  <text class="edgelbl" x="512" y="135">calendar</text>
+
+  <path class="edge" d="M586,269 L510,250" marker-end="url(#arrow)"/>
+  <text class="edgelbl" x="512" y="240">remote URL</text>
+</svg>

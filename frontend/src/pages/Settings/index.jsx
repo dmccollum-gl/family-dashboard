@@ -2720,8 +2720,27 @@ function UpdateSettings() {
   const [applying,    setApplying]    = useState(false);
   const [status,      setStatus]      = useState(null);
   const [showLog,     setShowLog]     = useState(false);
+  const [backedUp,    setBackedUp]    = useState(false);
+  const [backingUp,   setBackingUp]   = useState(false);
   const pollRef  = useRef(null);
   const logBoxRef = useRef(null);
+
+  // Download a full backup (config + users + OAuth creds) before updating.
+  const handleBackupFirst = async () => {
+    setBackingUp(true);
+    try {
+      const res = await api.get("/api/setup/backup", { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a   = document.createElement("a");
+      a.href     = url;
+      a.download = `dashboard-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setBackedUp(true);
+    } catch {
+      /* surfaced by the disabled state staying off */
+    } finally { setBackingUp(false); }
+  };
 
   const loadVersion = useCallback(async () => {
     try {
@@ -2903,6 +2922,12 @@ function UpdateSettings() {
                        bgcolor: "primary.50" }}>
               <Typography variant="body2" fontWeight={600} gutterBottom>
                 {checkResult.count} update{checkResult.count !== 1 ? "s" : ""} available
+                {checkResult.latest_version && (
+                  <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                    {checkResult.current_version} → {checkResult.latest_version}
+                    {checkResult.channel === "release" ? " (release)" : ""}
+                  </Typography>
+                )}
               </Typography>
               {checkResult.changes.length > 0 && (
                 <Box sx={{ display: "flex", flexDirection: "column", gap: 0.15, mb: 1.5,
@@ -2915,6 +2940,22 @@ function UpdateSettings() {
                   ))}
                 </Box>
               )}
+
+              {/* Recommend a backup before applying */}
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5, flexWrap: "wrap" }}>
+                <Button
+                  size="small" variant="outlined"
+                  startIcon={backingUp ? <CircularProgress size={14} color="inherit" /> : <BackupIcon />}
+                  onClick={handleBackupFirst}
+                  disabled={backingUp || applying}
+                >
+                  {backedUp ? "Download backup again" : "Back up first"}
+                </Button>
+                {backedUp
+                  ? <Typography variant="caption" color="success.main">✓ Backup downloaded</Typography>
+                  : <Typography variant="caption" color="text.secondary">Recommended before updating</Typography>}
+              </Box>
+
               <Button
                 variant="contained"
                 startIcon={applying

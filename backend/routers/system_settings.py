@@ -786,9 +786,18 @@ def _git_run(*args, timeout: int = 30):
     return r.stdout.strip(), r.stderr.strip(), r.returncode
 
 
+def _latest_release_tag() -> str | None:
+    """Newest vX.Y.Z release tag known locally, or None if the repo has none."""
+    out, _, rc = _git_run("tag", "--list", "v*", "--sort=-v:refname")
+    if rc != 0:
+        return None
+    tags = [t for t in out.splitlines() if t.strip()]
+    return tags[0] if tags else None
+
+
 @router.get("/update/version")
 def get_version():
-    """Return the currently-installed git commit (if any)."""
+    """Return the currently-installed version (release tag if on one, else commit)."""
     git_dir = _APP_DIR / ".git"
     if not git_dir.exists():
         return {"installed": False, "commit": None, "date": None, "branch": None}
@@ -796,31 +805,59 @@ def get_version():
         commit, _, _ = _git_run("rev-parse", "--short", "HEAD")
         date,   _, _ = _git_run("log", "-1", "--format=%ci")
         branch, _, _ = _git_run("rev-parse", "--abbrev-ref", "HEAD")
-        return {"installed": True, "commit": commit, "date": date, "branch": branch}
+        # Exact release tag at HEAD, if any (e.g. "v1.2.0").
+        tag, _, trc = _git_run("describe", "--tags", "--exact-match")
+        return {
+            "installed": True,
+            "commit":    commit,
+            "date":      date,
+            "branch":    branch,
+            "tag":       tag if trc == 0 else None,
+        }
     except Exception as e:
         return {"installed": False, "error": str(e)}
 
 
 @router.get("/update/check")
 def check_update(_user=Depends(require_owner)):
-    """Fetch from origin and compare with local HEAD. May take up to 30 s."""
+    """Check for a newer release. Tracks vX.Y.Z tags; falls back to main if none."""
     if not (_APP_DIR / ".git").exists():
         return {"error": "Not a git installation — updates not available."}
     try:
-        _, err, rc = _git_run("fetch", "origin", timeout=45)
+        # Pull down both new commits on main and any new release tags.
+        _, err, rc = _git_run("fetch", "--tags", "--force", "origin", "main", timeout=45)
         if rc != 0:
             return {"error": f"git fetch failed: {err or 'no internet?'}"}
 
-        local,  _, _ = _git_run("rev-parse", "--short", "HEAD")
+        local, _, _ = _git_run("rev-parse", "--short", "HEAD")
+        latest_tag  = _latest_release_tag()
+
+        if latest_tag:
+            # Release channel: compare HEAD against the newest release tag.
+            tag_commit, _, _ = _git_run("rev-parse", "--short", f"{latest_tag}^{{commit}}")
+            cur_tag,    _, crc = _git_run("describe", "--tags", "--abbrev=0")
+            log,        _, _ = _git_run("log", f"HEAD..{latest_tag}", "--oneline")
+            changes = [l for l in log.splitlines() if l.strip()]
+            return {
+                "channel":         "release",
+                "current_version": cur_tag if crc == 0 else local,
+                "latest_version":  latest_tag,
+                "up_to_date":      local == tag_commit or len(changes) == 0,
+                "changes":         changes,
+                "count":           len(changes),
+            }
+
+        # No releases published yet — track main (legacy behaviour).
         remote, _, _ = _git_run("rev-parse", "--short", "origin/main")
         log,    _, _ = _git_run("log", "HEAD..origin/main", "--oneline")
         changes = [l for l in log.splitlines() if l.strip()]
         return {
-            "local_commit":  local,
-            "remote_commit": remote,
-            "up_to_date":    local == remote,
-            "changes":       changes,
-            "count":         len(changes),
+            "channel":         "main",
+            "current_version": local,
+            "latest_version":  remote,
+            "up_to_date":      local == remote,
+            "changes":         changes,
+            "count":           len(changes),
         }
     except subprocess.TimeoutExpired:
         return {"error": "Timed out — check your internet connection."}

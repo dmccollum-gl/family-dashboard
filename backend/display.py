@@ -449,6 +449,79 @@ def _trunc(text: str, fnt: pygame.font.Font, max_w: int) -> str:
     return text + "…"
 
 
+def _wrap_to_width(text: str, fnt: pygame.font.Font, max_w: int) -> list:
+    """Greedy word-wrap to max_w. Hard-breaks any single word wider than the box
+    so long unbroken titles still fill the line instead of overflowing."""
+    lines: list = []
+    cur = ""
+    for word in str(text).split():
+        test = (cur + " " + word).strip()
+        if fnt.size(test)[0] <= max_w:
+            cur = test
+            continue
+        if cur:
+            lines.append(cur)
+            cur = ""
+        while fnt.size(word)[0] > max_w and len(word) > 1:
+            n = 1
+            while n < len(word) and fnt.size(word[:n + 1])[0] <= max_w:
+                n += 1
+            lines.append(word[:n])
+            word = word[n:]
+        cur = word
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
+def _ellipsize_last(s: str, fnt: pygame.font.Font, max_w: int) -> str:
+    """Force a trailing ellipsis onto a line, trimming until it fits."""
+    s = s.rstrip()
+    while s and fnt.size(s + "…")[0] > max_w:
+        s = s[:-1]
+    return (s + "…") if s else "…"
+
+
+def _draw_event_label(surf: pygame.Surface, text: str, x: float, y: float,
+                      max_w: float, max_h: float, color: tuple,
+                      base_size: int = 16, min_size: int = 11,
+                      valign: str = "top") -> None:
+    """Render an event title wrapped to fill the (max_w × max_h) block, at the
+    largest font that fits. Shows as much of the title as possible instead of
+    clipping it to one line; only ellipsises the final visible line if the whole
+    title can't fit even at min_size — so titles are never cut mid-word silently.
+    """
+    text = str(text).strip()
+    max_w = int(max_w); max_h = int(max_h)
+    if not text or max_w < 4 or max_h < 4:
+        return
+
+    chosen = None
+    for size in range(int(base_size), int(min_size) - 1, -1):
+        fnt    = _font(size)
+        line_h = fnt.get_linesize()
+        n_fit  = max(1, max_h // line_h)
+        lines  = _wrap_to_width(text, fnt, max_w)
+        if len(lines) <= n_fit:
+            chosen = (fnt, lines, line_h)
+            break
+    if chosen is None:
+        fnt    = _font(int(min_size))
+        line_h = fnt.get_linesize()
+        n_fit  = max(1, max_h // line_h)
+        full   = _wrap_to_width(text, fnt, max_w)
+        lines  = full[:n_fit]
+        if len(full) > n_fit and lines:
+            lines[-1] = _ellipsize_last(lines[-1], fnt, max_w)
+        chosen = (fnt, lines, line_h)
+
+    fnt, lines, line_h = chosen
+    block_h = len(lines) * line_h
+    ty = y + max(0, (max_h - block_h) // 2) if valign == "center" else y
+    for i, ln in enumerate(lines):
+        surf.blit(fnt.render(ln, True, color), (int(x), int(ty + i * line_h)))
+
+
 def _rrect(surf: pygame.Surface, color: tuple, rect: pygame.Rect,
            radius: int = 5, alpha: int = 255) -> None:
     if alpha < 255:
@@ -956,7 +1029,6 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         pygame.draw.line(surf, C["border"], (cx, y + hdr_h), (cx, y + h))
 
     # All-day event bars — spanning multiple columns; split vertically for shared events.
-    fnt_ad = _font(14)
     for ev, col_s, col_e, row in ad_placed:
         ex  = x + LABEL_W + col_s * col_w + _s(2)
         ew  = (col_e - col_s) * col_w - _s(4)
@@ -981,8 +1053,9 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             sh.fill((255, 255, 255, 30))
             surf.blit(sh, (ex + _s(1), ey + _s(1)))
             txt_clr = _event_text_color(clr)
-        surf.blit(fnt_ad.render(_trunc(ev["title"], fnt_ad, ew - _s(4)), True, txt_clr),
-                  (ex + _s(2), ey + (eh - fnt_ad.get_height()) // 2))
+        _draw_event_label(surf, ev["title"], ex + _s(3), ey + _s(1),
+                          ew - _s(6), eh - _s(2), txt_clr,
+                          base_size=15, min_size=11, valign="center")
 
     def _clamp(v, lo, hi):
         return max(lo, min(hi, v))
@@ -1026,12 +1099,21 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             sheen = pygame.Surface((ev_w - _s(2), sh_h), pygame.SRCALPHA)
             sheen.fill((255, 255, 255, 22))
             surf.blit(sheen, (int(ev_x) + _s(1), int(ev_y) + _s(1)))
-        fnt = _font(14 if ev_h < _s(40) else 16)
-        surf.blit(fnt.render(_trunc(ev["title"], fnt, ev_w - _s(6)), True, ev_txt_c),
-                  (ev_x + _s(6), ev_y + _s(2)))
-        if ev_h >= _s(40):
+        # Wrap the title to fill the block (multi-line, auto-sized) instead of
+        # clipping it to a single line. On tall blocks, reserve room for the time.
+        pad_x    = _s(6)
+        lbl_x    = ev_x + pad_x
+        lbl_y    = ev_y + _s(2)
+        lbl_w    = ev_w - pad_x - _s(3)
+        lbl_h    = ev_h - _s(4)
+        show_time = ev_h >= _s(44)
+        if show_time:
+            lbl_h -= _s(15)
+        _draw_event_label(surf, ev["title"], lbl_x, lbl_y, lbl_w, lbl_h, ev_txt_c,
+                          base_size=16, min_size=11, valign="top")
+        if show_time:
             t2 = _font(13).render(ev["start"].strftime("%-I:%M %p"), True, ev_txt_c)
-            surf.blit(t2, (ev_x + _s(6), ev_y + _s(20)))
+            surf.blit(t2, (int(ev_x + pad_x), int(ev_y + ev_h - _s(15))))
 
     # now-line is intentionally omitted here — drawn as an overlay in main()
     return allday_h

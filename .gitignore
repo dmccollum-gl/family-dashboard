@@ -5,6 +5,15 @@ backend/dashboard.db
 backend/dashboard.db-shm
 backend/dashboard.db-wal
 
+# Dev-only notes — kept locally, not published. These contain internal LAN IPs,
+# the production Pi address, and the old default SSH password, so they must not
+# ship in the public repo. Edit them freely; git just won't track them.
+/CLAUDE.md
+/DASHBOARD_PROJECT_CONTEXT.md
+/PROJECT_SUMMARY.md
+/Dashboard_Summary.docx
+/Roadmap.docx
+
 # Python
 __pycache__/
 *.py[cod]

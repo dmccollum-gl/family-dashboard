@@ -1,7 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pathlib import Path
 from datetime import datetime
 import json, subprocess, threading, time as _time
+
+from auth_deps import require_admin, require_owner
 
 router = APIRouter()
 
@@ -52,7 +54,7 @@ def get_oauth_config():
 
 
 @router.put("/oauth")
-def save_oauth_config(body: dict):
+def save_oauth_config(body: dict, _user=Depends(require_owner)):
     updates = {}
     if body.get("client_id"):
         updates["GOOGLE_CLIENT_ID"] = body["client_id"]
@@ -76,7 +78,7 @@ def get_weather_config():
 
 
 @router.put("/weather")
-def save_weather_config(body: dict):
+def save_weather_config(body: dict, _user=Depends(require_admin)):
     updates = {}
     if "location" in body:
         new_loc = body["location"]
@@ -107,7 +109,7 @@ def get_rss_config():
 
 
 @router.put("/rss")
-def save_rss_config(body: dict):
+def save_rss_config(body: dict, _user=Depends(require_admin)):
     feeds = body.get("feeds", [])
     cleaned = [
         {"url": f["url"].strip(), "label": f.get("label", "").strip()}
@@ -147,7 +149,7 @@ def get_display_config():
 
 
 @router.put("/display")
-def save_display_config(body: dict):
+def save_display_config(body: dict, _user=Depends(require_admin)):
     updates = {}
     if body.get("theme") in VALID_THEMES:
         updates["display_theme"] = body["theme"]
@@ -191,7 +193,7 @@ def get_permissions():
 
 
 @router.put("/permissions")
-def save_permissions(body: dict):
+def save_permissions(body: dict, _user=Depends(require_admin)):
     cfg = _read_config()
     perms = dict(cfg.get("permissions", {}))
     if "admin" in body and isinstance(body["admin"], list):
@@ -211,7 +213,7 @@ def _after(delay: float, fn):
 
 
 @router.post("/restart/backend")
-def restart_backend():
+def restart_backend(_user=Depends(require_owner)):
     threading.Thread(
         target=_after,
         args=(1.0, lambda: subprocess.run(["sudo", "systemctl", "restart", "dashboard-backend"], check=False)),
@@ -221,7 +223,7 @@ def restart_backend():
 
 
 @router.post("/restart/display")
-def restart_display():
+def restart_display(_user=Depends(require_owner)):
     # display.py runs as the same user (dashboard), so pkill works without sudo.
     # The .bash_profile while-loop restarts it automatically after 5 s.
     threading.Thread(
@@ -254,7 +256,7 @@ def get_tunnel():
 
 
 @router.put("/tunnel")
-def save_tunnel(body: dict):
+def save_tunnel(body: dict, _user=Depends(require_owner)):
     updates = {}
     if body.get("clear"):
         updates["tunnel_token"] = ""
@@ -266,7 +268,7 @@ def save_tunnel(body: dict):
 
 
 @router.post("/tunnel/{action}")
-def control_tunnel(action: str):
+def control_tunnel(action: str, _user=Depends(require_owner)):
     if action not in ("start", "stop", "restart"):
         raise HTTPException(status_code=400, detail="Invalid action. Use start, stop, or restart.")
     threading.Thread(
@@ -282,7 +284,7 @@ def control_tunnel(action: str):
 # ── FQDN auto-detection ───────────────────────────────────────────────────────
 
 @router.get("/fqdn/detect")
-def detect_fqdn():
+def detect_fqdn(_user=Depends(require_owner)):
     """Try to detect the Pi's public hostname from Tailscale or Cloudflare Tunnel."""
     import shutil, json as _json, base64 as _b64
 
@@ -332,7 +334,7 @@ def _cf_hdrs(token: str) -> dict:
 
 
 @router.get("/cloudflare/credentials")
-def cf_get_credentials():
+def cf_get_credentials(_user=Depends(require_owner)):
     """Return stored Cloudflare credentials for pre-filling the UI."""
     cfg = _read_config()
     return {
@@ -342,7 +344,7 @@ def cf_get_credentials():
 
 
 @router.post("/cloudflare/verify")
-def cf_verify(body: dict):
+def cf_verify(body: dict, _user=Depends(require_owner)):
     """Verify a Cloudflare API token and list zones for the given account."""
     import httpx as _httpx
 
@@ -418,7 +420,7 @@ def cf_verify(body: dict):
 
 
 @router.post("/cloudflare/setup")
-def cf_setup(body: dict):
+def cf_setup(body: dict, _user=Depends(require_owner)):
     """
     Full Cloudflare tunnel setup:
       0. Tear down any previously-created tunnel + DNS record
@@ -639,7 +641,7 @@ def cf_setup(body: dict):
 
 
 @router.get("/cloudflare/tunnels")
-def cf_list_tunnels():
+def cf_list_tunnels(_user=Depends(require_owner)):
     """List all non-deleted Cloudflare Tunnels for the stored account."""
     import httpx as _httpx
 
@@ -687,7 +689,7 @@ def cf_list_tunnels():
 
 
 @router.delete("/cloudflare/tunnel/{tunnel_id}")
-def cf_delete_tunnel(tunnel_id: str):
+def cf_delete_tunnel(tunnel_id: str, _user=Depends(require_owner)):
     """Delete a Cloudflare Tunnel (and its DNS record + local token if it's the Pi's tunnel)."""
     import httpx as _httpx
 
@@ -800,7 +802,7 @@ def get_version():
 
 
 @router.get("/update/check")
-def check_update():
+def check_update(_user=Depends(require_owner)):
     """Fetch from origin and compare with local HEAD. May take up to 30 s."""
     if not (_APP_DIR / ".git").exists():
         return {"error": "Not a git installation — updates not available."}
@@ -827,7 +829,7 @@ def check_update():
 
 
 @router.post("/update/apply")
-def apply_update():
+def apply_update(_user=Depends(require_owner)):
     """Start the update script in the background."""
     global _update_state
     with _UPDATE_LOCK:
@@ -878,7 +880,7 @@ def apply_update():
 
 
 @router.get("/update/status")
-def get_update_status():
+def get_update_status(_user=Depends(require_owner)):
     """Poll this endpoint to track update progress."""
     with _UPDATE_LOCK:
         snap = dict(_update_state)
@@ -991,7 +993,7 @@ def get_display_schedule():
 
 
 @router.put("/display_schedule")
-def save_display_schedule(body: dict):
+def save_display_schedule(body: dict, _user=Depends(require_admin)):
     days = sorted({int(d) for d in body.get("days", list(range(7))) if 0 <= int(d) <= 6})
     _write_config({
         "display_schedule": {
@@ -1005,7 +1007,7 @@ def save_display_schedule(body: dict):
 
 
 @router.post("/display_schedule/power")
-def manual_display_power(body: dict):
+def manual_display_power(body: dict, _user=Depends(require_admin)):
     """Immediately turn the display on or off via the flag-file mechanism."""
     on = bool(body.get("on", True))
     ok = _set_display_power(on)

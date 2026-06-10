@@ -724,29 +724,30 @@ function MyAccountInner({ hasSecret, onSignIn, onSignOut }) {
   const handleToken = async (tokenResponse) => {
     setSigning(true); setError(null);
     try {
-      const infoRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-        headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
-      });
-      if (!infoRes.ok) throw new Error("Could not get user info from Google.");
-      const info = await infoRes.json();
-      const u = { email: info.email, name: info.name, picture: info.picture };
-      const expiryMs = Date.now() + (tokenResponse.expires_in || 3600) * 1000;
+      // Establish a verified server session: the backend re-checks the token
+      // with Google, enforces the allow-list, and stores the token securely.
       const calsList = [...selected].map(id => ({ id, color: calColors.get(id) || null }));
-      await api.put(`/api/user-prefs/${encodeURIComponent(info.email)}`, {
-        display_name: info.name, display_color: color,
-        selected_calendars: calsList, access_token: tokenResponse.access_token, token_expiry: expiryMs,
+      const res = await api.post("/api/auth/session", {
+        access_token:       tokenResponse.access_token,
+        expires_in:         tokenResponse.expires_in || 3600,
+        selected_calendars: calsList,
       });
-      setUser(u); storeUser(u); loadPrefs(u.email);
+      const u = { email: res.data.email, name: res.data.name, picture: res.data.picture };
+      // Persist display color now that the session is authenticated.
       try {
-        const prefsRes = await api.get(`/api/user-prefs/${encodeURIComponent(info.email)}`);
-        if (onSignIn) onSignIn({ ...u, role: prefsRes.data.role || "user" });
-      } catch { if (onSignIn) onSignIn({ ...u, role: "user" }); }
+        await api.put(`/api/user-prefs/${encodeURIComponent(u.email)}`, {
+          display_name: u.name, display_color: color,
+        });
+      } catch {}
+      setUser(u); storeUser(u); loadPrefs(u.email);
+      if (onSignIn) onSignIn({ ...u, role: res.data.role || "user" });
     } catch (e) {
       setError(e?.response?.data?.detail || "Sign-in failed.");
     } finally { setSigning(false); }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try { await api.post("/api/auth/logout"); } catch {}
     googleLogout(); clearStoredUser();
     setUser(null); setColor("#1976d2"); setSelected(new Set()); setCalColors(new Map()); setMsg(null);
     if (onSignOut) onSignOut();
@@ -757,6 +758,7 @@ function MyAccountInner({ hasSecret, onSignIn, onSignOut }) {
     setRemoving(true); setError(null);
     try {
       await api.delete(`/api/user-prefs/${encodeURIComponent(user.email)}`);
+      try { await api.post("/api/auth/logout"); } catch {}
       googleLogout();
       clearStoredUser();
       clearStoredRole();
@@ -1041,6 +1043,10 @@ function FamilyMembers({ currentUser, currentRole }) {
   const [error,         setError]         = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [actionMenu,    setActionMenu]    = useState(null);
+  const [inviteEmail,   setInviteEmail]   = useState("");
+  const [inviteRole,    setInviteRole]    = useState("user");
+  const [inviting,      setInviting]      = useState(false);
+  const [inviteMsg,     setInviteMsg]     = useState(null);
 
   const load = useCallback(async () => {
     try { const res = await api.get("/api/user-prefs"); setMembers(res.data); } catch {}
@@ -1053,9 +1059,8 @@ function FamilyMembers({ currentUser, currentRole }) {
   const patchRole = async (email, role) => {
     setBusyFor(email, true);
     try {
-      await api.patch(`/api/user-prefs/${encodeURIComponent(email)}/role`, {
-        role, requester: currentUser?.email,
-      });
+      // Identity comes from the server session — no client-supplied requester.
+      await api.patch(`/api/user-prefs/${encodeURIComponent(email)}/role`, { role });
       setMembers(prev => prev.map(m => m.email === email ? { ...m, role } : m));
     } catch (e) { setError(e?.response?.data?.detail || "Role change failed."); }
     finally { setBusyFor(email, false); }
@@ -1064,12 +1069,24 @@ function FamilyMembers({ currentUser, currentRole }) {
   const patchBlocked = async (email, blocked) => {
     setBusyFor(email, true);
     try {
-      await api.patch(`/api/user-prefs/${encodeURIComponent(email)}/blocked`, {
-        blocked, requester: currentUser?.email,
-      });
+      await api.patch(`/api/user-prefs/${encodeURIComponent(email)}/blocked`, { blocked });
       setMembers(prev => prev.map(m => m.email === email ? { ...m, blocked } : m));
     } catch (e) { setError(e?.response?.data?.detail || "Action failed."); }
     finally { setBusyFor(email, false); }
+  };
+
+  const inviteUser = async () => {
+    const email = inviteEmail.trim().toLowerCase();
+    if (!email || !email.includes("@")) { setError("Enter a valid email address."); return; }
+    setInviting(true); setError(null); setInviteMsg(null);
+    try {
+      await api.post("/api/user-prefs/invite", { email, role: inviteRole });
+      setInviteMsg(`${email} can now sign in to this dashboard.`);
+      setInviteEmail("");
+      load();
+    } catch (e) {
+      setError(e?.response?.data?.detail || "Could not authorize that email.");
+    } finally { setInviting(false); }
   };
 
   const handleRemove = async (email) => {
@@ -1092,6 +1109,41 @@ function FamilyMembers({ currentUser, currentRole }) {
         {isAdminOrOwner && " Use the menu on each member to manage roles and access."}
       </Typography>
       {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
+
+      {/* Authorize new accounts (allow-list) — owner & admin only */}
+      {isAdminOrOwner && (
+        <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, p: 1.5,
+                   display: "flex", flexDirection: "column", gap: 1 }}>
+          <Typography variant="body2" fontWeight={600}>Authorize an account</Typography>
+          <Typography variant="caption" color="text.secondary">
+            This dashboard is private. Only emails you authorize here can sign in.
+          </Typography>
+          {inviteMsg && <Alert severity="success" onClose={() => setInviteMsg(null)}>{inviteMsg}</Alert>}
+          <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", alignItems: "center" }}>
+            <TextField
+              size="small" type="email" placeholder="name@example.com"
+              value={inviteEmail}
+              onChange={e => setInviteEmail(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") inviteUser(); }}
+              sx={{ flex: 1, minWidth: 200 }}
+            />
+            {isOwner && (
+              <ToggleButtonGroup
+                size="small" exclusive value={inviteRole}
+                onChange={(_e, v) => v && setInviteRole(v)}
+              >
+                <ToggleButton value="user">User</ToggleButton>
+                <ToggleButton value="admin">Admin</ToggleButton>
+              </ToggleButtonGroup>
+            )}
+            <Button variant="contained" size="small" onClick={inviteUser}
+              disabled={inviting} startIcon={inviting ? <CircularProgress size={14} color="inherit" /> : <GroupAddIcon />}>
+              Authorize
+            </Button>
+          </Box>
+        </Box>
+      )}
+
       {!members.length && (
         <Typography variant="body2" color="text.secondary">No family members have signed in yet.</Typography>
       )}
@@ -3201,12 +3253,21 @@ export default function Settings() {
   const [oauthConfigured, setOauthConfigured] = useState(true);
   const [tab,             setTab]             = useState("my_account");
 
-  // Refresh role from server on load
+  // Source of truth for identity is the server session, not localStorage.
+  // On load, ask the backend who we are; reconcile local cache to match.
   useEffect(() => {
-    const user = getStoredUser();
-    if (!user?.email) return;
-    api.get(`/api/user-prefs/${encodeURIComponent(user.email)}`)
-      .then(res => { const r = res.data.role || "user"; setCurrentRole(r); storeRole(r); })
+    api.get("/api/auth/me")
+      .then(res => {
+        if (res.data.authenticated) {
+          const u = { ...(getStoredUser() || {}), email: res.data.email, name: res.data.name };
+          setCurrentUser(u); storeUser(u);
+          const r = res.data.role || "user";
+          setCurrentRole(r); storeRole(r);
+        } else {
+          setCurrentUser(null); clearStoredUser();
+          setCurrentRole("user"); clearStoredRole();
+        }
+      })
       .catch(() => {});
   }, []);
 

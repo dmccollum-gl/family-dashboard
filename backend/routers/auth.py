@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pathlib import Path
 import httpx, time
 from database import get_db, UserPrefs
+from auth_deps import current_user
 
 router = APIRouter()
 
@@ -20,8 +21,64 @@ def _read_env() -> dict:
     return env
 
 
+def _resolve_account(db: Session, email: str) -> UserPrefs:
+    """Apply the allow-list policy and return the UserPrefs row to sign in.
+
+    Policy:
+      • If the email already has a row (invited during setup, or a returning
+        user), allow it.
+      • Else if the database is completely empty, bootstrap this email as the
+        owner (covers a fresh install where nobody was pre-invited).
+      • Otherwise the dashboard is private and this email was never authorized
+        — reject with 403.
+    """
+    prefs = db.get(UserPrefs, email)
+
+    if prefs and prefs.blocked:
+        raise HTTPException(status_code=403, detail="Your account has been blocked by an administrator.")
+
+    if prefs:
+        return prefs
+
+    if db.query(UserPrefs).count() == 0:
+        prefs = UserPrefs(
+            email=email,
+            selected_calendars=[{"id": email, "color": None}],
+            role="owner",
+        )
+        db.add(prefs)
+        return prefs
+
+    raise HTTPException(
+        status_code=403,
+        detail="This dashboard is private. Ask the owner to add your email address before signing in.",
+    )
+
+
+def _establish_session(request: Request, prefs: UserPrefs):
+    """Record the verified identity in the signed session cookie."""
+    request.session["email"] = prefs.email
+    request.session["role"] = prefs.role or "user"
+
+
+async def _fetch_userinfo(access_token: str) -> dict:
+    async with httpx.AsyncClient(timeout=10) as http:
+        info_res = await http.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if info_res.status_code != 200:
+        raise HTTPException(status_code=502, detail="Failed to verify your Google account.")
+    return info_res.json()
+
+
 @router.post("/google")
-async def exchange_google_code(body: dict, db: Session = Depends(get_db)):
+async def exchange_google_code(body: dict, request: Request, db: Session = Depends(get_db)):
+    """Auth-code (popup) flow: exchange the code server-side, then sign in.
+
+    Preferred flow — yields a refresh token and verifies everything on the
+    backend before establishing the session.
+    """
     code = body.get("code")
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code.")
@@ -53,31 +110,12 @@ async def exchange_google_code(body: dict, db: Session = Depends(get_db)):
     expires_in    = td.get("expires_in", 3600)
     expiry_ms     = int((time.time() + expires_in) * 1000)
 
-    async with httpx.AsyncClient(timeout=10) as http:
-        info_res = await http.get(
-            "https://www.googleapis.com/oauth2/v3/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-
-    if info_res.status_code != 200:
-        raise HTTPException(status_code=502, detail="Failed to fetch user info from Google.")
-
-    info  = info_res.json()
+    info  = await _fetch_userinfo(access_token)
     email = info["email"]
 
-    prefs = db.get(UserPrefs, email)
+    # Allow-list check (raises 403 if not authorized).
+    prefs = _resolve_account(db, email)
 
-    if prefs and prefs.blocked:
-        raise HTTPException(status_code=403, detail="Your account has been blocked by an administrator.")
-
-    if not prefs:
-        is_first = db.query(UserPrefs).count() == 0
-        prefs = UserPrefs(
-            email=email,
-            selected_calendars=[{"id": email, "color": None}],
-            role="owner" if is_first else "user",
-        )
-        db.add(prefs)
     if not prefs.selected_calendars:
         prefs.selected_calendars = [{"id": email, "color": None}]
     if not prefs.display_name:
@@ -88,6 +126,8 @@ async def exchange_google_code(body: dict, db: Session = Depends(get_db)):
     prefs.token_expiry = expiry_ms
     db.commit()
 
+    _establish_session(request, prefs)
+
     return {
         "email":        email,
         "name":         info.get("name"),
@@ -95,3 +135,74 @@ async def exchange_google_code(body: dict, db: Session = Depends(get_db)):
         "token_expiry": expiry_ms,
         "role":         prefs.role or "user",
     }
+
+
+@router.post("/session")
+async def establish_token_session(body: dict, request: Request, db: Session = Depends(get_db)):
+    """Implicit-token (fallback) flow: verify the access token, then sign in.
+
+    Used when no client secret is configured. The token is re-verified against
+    Google here so the backend — not the client — decides who the user is and
+    whether they're allowed in. Replaces the old unauthenticated PUT path.
+    """
+    access_token = body.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Missing access token.")
+    expires_in = int(body.get("expires_in") or 3600)
+    expiry_ms  = int((time.time() + expires_in) * 1000)
+
+    info  = await _fetch_userinfo(access_token)
+    email = info["email"]
+
+    # Allow-list check (raises 403 if not authorized).
+    prefs = _resolve_account(db, email)
+
+    if not prefs.display_name:
+        prefs.display_name = info.get("name", "")
+    if not prefs.selected_calendars:
+        prefs.selected_calendars = [{"id": email, "color": None}]
+    # Only the user's own sign-in may set calendars passed from the client.
+    if isinstance(body.get("selected_calendars"), list):
+        prefs.selected_calendars = body["selected_calendars"]
+    prefs.access_token = access_token
+    prefs.token_expiry = expiry_ms
+    db.commit()
+
+    _establish_session(request, prefs)
+
+    return {
+        "email":        email,
+        "name":         info.get("name"),
+        "picture":      info.get("picture"),
+        "token_expiry": expiry_ms,
+        "role":         prefs.role or "user",
+    }
+
+
+@router.get("/me")
+def whoami(request: Request, db: Session = Depends(get_db)):
+    """Return the signed-in identity (source of truth for the frontend on load).
+
+    Returns {authenticated: false} rather than 401 so the UI can render a
+    signed-out state without treating it as an error.
+    """
+    email = request.session.get("email")
+    if not email:
+        return {"authenticated": False}
+    user = db.get(UserPrefs, email)
+    if not user or user.blocked:
+        request.session.clear()
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "email":         user.email,
+        "name":          user.display_name or "",
+        "role":          user.role or "user",
+    }
+
+
+@router.post("/logout")
+def logout(request: Request):
+    """Clear the server session."""
+    request.session.clear()
+    return {"status": "signed_out"}

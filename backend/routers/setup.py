@@ -7,15 +7,30 @@ import threading
 import uuid
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from config import settings
 from database import SessionLocal, UserPrefs, get_db
+from auth_deps import require_owner
 from routers.calendar import _events_cache
 
 router = APIRouter()
+
+
+def _guard_reconfigure(request: Request, db: Session):
+    """Once the device is configured, reconfiguring requires the signed-in owner.
+
+    During first-time setup (no .configured flag yet) nobody is signed in, so
+    the wizard endpoints stay open. After that, an exposed device must not let
+    a stranger rewrite WiFi or reboot it.
+    """
+    if _on_pi() and os.path.exists(CONFIGURED_FLAG):
+        email = request.session.get("email")
+        user  = db.get(UserPrefs, email) if email else None
+        if not user or (user.role or "user") != "owner":
+            raise HTTPException(status_code=403, detail="Only the owner can reconfigure this device.")
 
 CONFIGURED_FLAG = "/opt/dashboard/.configured"
 CONFIG_PATH     = "/opt/dashboard/backend/dashboard_config.json"
@@ -68,8 +83,9 @@ def _reset_user_data():
             pass
 
 @router.post("/reboot")
-def reboot_pi():
+def reboot_pi(request: Request, db: Session = Depends(get_db)):
     """Reboot the Pi by calling the apply script with no SSID (skips WiFi, just reboots)."""
+    _guard_reconfigure(request, db)
     if not _on_pi():
         return {"success": True}
     try:
@@ -98,7 +114,7 @@ def reboot_pi():
 
 
 @router.get("/backup")
-def download_backup(db: Session = Depends(get_db)):
+def download_backup(db: Session = Depends(get_db), _user: UserPrefs = Depends(require_owner)):
     """Return a full JSON backup: config, OAuth credentials, and all user data."""
     config = {}
     if os.path.exists(CONFIG_PATH):
@@ -142,7 +158,7 @@ def download_backup(db: Session = Depends(get_db)):
 
 
 @router.post("/restore")
-def restore_backup(body: dict, db: Session = Depends(get_db)):
+def restore_backup(body: dict, db: Session = Depends(get_db), _user: UserPrefs = Depends(require_owner)):
     """Restore a backup produced by GET /backup. Overwrites config, env, and all users."""
     if body.get("version") != 1:
         raise HTTPException(status_code=400, detail="Unsupported backup version.")
@@ -184,7 +200,7 @@ def restore_backup(body: dict, db: Session = Depends(get_db)):
 
 
 @router.post("/reset")
-def reset_install():
+def reset_install(_user: UserPrefs = Depends(require_owner)):
     """Remove all calendar users and RSS feeds; keep OAuth and weather credentials."""
     _reset_user_data()
     return {"success": True}
@@ -364,7 +380,8 @@ def _provision_tunnel(config_path: str, device_name: str, activation_code: str) 
 
 
 @router.post("/configure")
-def configure(req: SetupRequest):
+def configure(req: SetupRequest, request: Request, db: Session = Depends(get_db)):
+    _guard_reconfigure(request, db)
     if not _on_pi():
         # Dev machine — save config locally and simulate success
         local_config = os.path.join(os.path.dirname(__file__), "..", "dashboard_config.json")

@@ -307,7 +307,9 @@ class SetupRequest(BaseModel):
     password:          str
     device_name:       str
     city:              str
-    activation_code:   str
+    activation_code:   str  = ""      # optional — only used with a provisioning server
+    login_username:    str  = "dashboard"  # terminal/SSH login user
+    login_password:    str  = ""      # terminal/SSH login password (set on the Pi)
     already_connected: bool = False   # skip WiFi reconfiguration
 
 
@@ -382,6 +384,17 @@ def _provision_tunnel(config_path: str, device_name: str, activation_code: str) 
 @router.post("/configure")
 def configure(req: SetupRequest, request: Request, db: Session = Depends(get_db)):
     _guard_reconfigure(request, db)
+
+    # Validate terminal login credentials (single-line; min length when set).
+    login_user = (req.login_username or "dashboard").strip() or "dashboard"
+    login_pass = req.login_password or ""
+    if any(c in login_pass for c in "\n\r"):
+        return {"success": False, "error": "Password cannot contain line breaks."}
+    if login_pass and len(login_pass) < 6:
+        return {"success": False, "error": "Terminal password must be at least 6 characters."}
+    if (not login_user.isascii()) or any(c in login_user for c in "\n\r \t:"):
+        return {"success": False, "error": "Login username may not contain spaces or special characters."}
+
     if not _on_pi():
         # Dev machine — save config locally and simulate success
         local_config = os.path.join(os.path.dirname(__file__), "..", "dashboard_config.json")
@@ -442,10 +455,13 @@ def configure(req: SetupRequest, request: Request, db: Session = Depends(get_db)
         open(CONFIGURED_FLAG, "w").close()
 
         # Background thread so the HTTP response reaches the client first.
-        ssid_arg    = "" if req.already_connected else req.ssid
-        password_in = b"" if req.already_connected else (req.password.encode() + b"\n")
+        # stdin carries secrets line-by-line so they never appear in argv:
+        #   line 1 = WiFi password, line 2 = login user, line 3 = login password.
+        ssid_arg   = "" if req.already_connected else req.ssid
+        wifi_pw    = "" if req.already_connected else req.password
+        stdin_blob = f"{wifi_pw}\n{login_user}\n{login_pass}\n".encode()
 
-        def _apply(ssid=ssid_arg, pw=password_in):
+        def _apply(ssid=ssid_arg, blob=stdin_blob):
             import time, logging
             time.sleep(1.5)
             try:
@@ -455,7 +471,7 @@ def configure(req: SetupRequest, request: Request, db: Session = Depends(get_db)
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
-                out, err = proc.communicate(input=pw, timeout=120)
+                out, err = proc.communicate(input=blob, timeout=120)
                 if proc.returncode != 0:
                     logging.error("[setup] apply script rc=%d stderr=%s", proc.returncode, err.decode(errors="replace"))
             except Exception as exc:

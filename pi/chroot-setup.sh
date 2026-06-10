@@ -247,9 +247,13 @@ info "Enabling SSH..."
 systemctl enable ssh.service 2>/dev/null || systemctl enable sshd.service 2>/dev/null || true
 # Touch the flag file Pi OS checks for SSH on first boot
 touch /boot/firmware/ssh 2>/dev/null || touch /boot/ssh 2>/dev/null || true
-# Set a password for the dashboard user so SSH login works
-echo "dashboard:dashboard" | chpasswd
+# NO default password is shipped. The image lock keeps SSH password login
+# disabled until the owner sets their own password during the web setup wizard
+# (pi-setup-apply.sh runs chpasswd then). Console autologin on tty1 still works
+# for the kiosk display and as a physical-keyboard recovery path.
+passwd -l dashboard 2>/dev/null || true
 # Explicitly allow password auth  --  Pi OS Bookworm sshd_config.d/ can override to "no"
+# (login still requires the user-set password; this just doesn't block it).
 mkdir -p /etc/ssh/sshd_config.d
 echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/10-dashboard.conf
 

@@ -194,7 +194,18 @@ function WifiStep({ value, onChange, onNext }) {
 // ─── Step 1: Device info ─────────────────────────────────────────────────────
 
 function DeviceStep({ value, onChange, onNext, onBack, submitting }) {
-  const canAdvance = value.device_name.trim() && value.city.trim() && value.activation_code.trim();
+  const [showPass, setShowPass] = useState(false);
+
+  const pwLongEnough = value.login_password.length >= 6;
+  const pwMatch      = value.login_password === value.login_password_confirm;
+  const pwError      = value.login_password_confirm.length > 0 && !pwMatch;
+
+  const canAdvance =
+    value.device_name.trim() &&
+    value.city.trim() &&
+    value.login_username.trim() &&
+    pwLongEnough && pwMatch;
+
   return (
     <Stack spacing={3}>
       <Typography variant="h6">Name this device</Typography>
@@ -215,13 +226,58 @@ function DeviceStep({ value, onChange, onNext, onBack, submitting }) {
         fullWidth
         helperText="Used for the weather display"
       />
+
+      <Divider>Device login</Divider>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: -1 }}>
+        Choose the username and password you'll use to log in to this device over
+        SSH or a keyboard. This replaces any default password — keep it private.
+      </Typography>
       <TextField
-        label="Activation code"
+        label="Login username"
+        value={value.login_username}
+        onChange={e => onChange({ ...value, login_username: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "") })}
+        fullWidth
+        helperText="Default is “dashboard”. Lowercase letters, numbers, - and _ only."
+      />
+      <TextField
+        label="Login password"
+        type={showPass ? "text" : "password"}
+        value={value.login_password}
+        onChange={e => onChange({ ...value, login_password: e.target.value })}
+        fullWidth
+        error={value.login_password.length > 0 && !pwLongEnough}
+        helperText={
+          value.login_password.length > 0 && !pwLongEnough
+            ? "At least 6 characters."
+            : "Used for SSH / terminal access to the Pi."
+        }
+        InputProps={{
+          endAdornment: (
+            <InputAdornment position="end">
+              <IconButton onClick={() => setShowPass(s => !s)} edge="end">
+                {showPass ? <VisibilityOff /> : <Visibility />}
+              </IconButton>
+            </InputAdornment>
+          ),
+        }}
+      />
+      <TextField
+        label="Confirm password"
+        type={showPass ? "text" : "password"}
+        value={value.login_password_confirm}
+        onChange={e => onChange({ ...value, login_password_confirm: e.target.value })}
+        fullWidth
+        error={pwError}
+        helperText={pwError ? "Passwords don't match." : " "}
+      />
+
+      <TextField
+        label="Activation code (optional)"
         placeholder="XXXX-XXXX-XXXX-XXXX"
         value={value.activation_code}
         onChange={e => onChange({ ...value, activation_code: e.target.value.toUpperCase() })}
         fullWidth
-        helperText="Single-use code included with your device — required to register your tunnel"
+        helperText="Only needed if your device came with a code for a managed tunnel. Leave blank otherwise."
         InputProps={{
           startAdornment: <InputAdornment position="start"><VpnKeyIcon /></InputAdornment>,
         }}
@@ -365,11 +421,14 @@ export default function Setup() {
   const [rebooting, setRebooting]   = useState(false);
 
   const [form, setForm] = useState({
-    ssid:            "",
-    password:        "",
-    device_name:     "",
-    city:            "",
-    activation_code: "",
+    ssid:                   "",
+    password:               "",
+    device_name:            "",
+    city:                   "",
+    activation_code:        "",
+    login_username:         "dashboard",
+    login_password:         "",
+    login_password_confirm: "",
   });
 
   useEffect(() => {

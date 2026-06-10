@@ -3,10 +3,16 @@ set -uo pipefail
 
 SSID="${1:-}"
 DEVICE_NAME="${2:-dashboard-setup}"
-read -r PASSWORD 2>/dev/null || PASSWORD=""
+# stdin protocol (one value per line, secrets never passed via argv):
+#   line 1: WiFi password        (empty when already connected)
+#   line 2: terminal login user  (empty to skip setting a login password)
+#   line 3: terminal login pass   (empty to skip)
+read -r PASSWORD   2>/dev/null || PASSWORD=""
+read -r LOGIN_USER 2>/dev/null || LOGIN_USER=""
+read -r LOGIN_PASS 2>/dev/null || LOGIN_PASS=""
 
-# Temporary debug log — remove after confirming WiFi setup works
-echo "[setup-apply] DEBUG: SSID='${SSID}' PASS_LEN=${#PASSWORD} DEVICE='${DEVICE_NAME}'" >> /opt/dashboard/apply-debug.log 2>/dev/null || true
+# Temporary debug log — lengths only, never the secrets themselves.
+echo "[setup-apply] DEBUG: SSID='${SSID}' PASS_LEN=${#PASSWORD} DEVICE='${DEVICE_NAME}' LOGIN_USER='${LOGIN_USER}' LOGIN_PASS_LEN=${#LOGIN_PASS}" >> /opt/dashboard/apply-debug.log 2>/dev/null || true
 
 HOTSPOT_CON="dashboard-hotspot"
 WIFI_CON="dashboard-wifi"
@@ -168,6 +174,27 @@ fi
 PROFILE
 chown dashboard:dashboard "${DASH_HOME}/.bash_profile"
 echo "[setup-apply] .bash_profile updated (waits for API health + 60s warmup)."
+
+# -- Terminal / SSH login credentials (set by the owner during setup) ---------
+# The image ships with the dashboard account locked (no default password), so
+# this is what enables SSH/terminal login. printf is a bash builtin, so the
+# password is never exposed in the process list.
+if [ -n "$LOGIN_PASS" ]; then
+  TARGET_USER="${LOGIN_USER:-dashboard}"
+  if [ "$TARGET_USER" != "dashboard" ] && ! id "$TARGET_USER" &>/dev/null; then
+    useradd -m -s /bin/bash -G sudo "$TARGET_USER" 2>/dev/null \
+      && echo "[setup-apply] Created login user '$TARGET_USER'."
+  fi
+  if printf '%s:%s\n' "$TARGET_USER" "$LOGIN_PASS" | chpasswd 2>/dev/null; then
+    passwd -u "$TARGET_USER" 2>/dev/null || true   # unlock (image ships locked)
+    [ "$TARGET_USER" != "dashboard" ] && usermod -aG sudo "$TARGET_USER" 2>/dev/null || true
+    echo "[setup-apply] Terminal login password set for '$TARGET_USER'."
+  else
+    echo "[setup-apply] WARNING: failed to set password for '$TARGET_USER'."
+  fi
+else
+  echo "[setup-apply] No login password provided — leaving account unchanged."
+fi
 
 # -- WiFi / hostname ----------------------------------------------------------
 rm -f "$DNSMASQ_SHARED_DIR/captive-portal.conf"

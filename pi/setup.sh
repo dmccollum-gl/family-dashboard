@@ -105,6 +105,24 @@ sudo -u "$DASH_USER" "$VENV/bin/pip" install --quiet \
 sudo -u "$DASH_USER" "$VENV/bin/pip" install --quiet pygame-ce uvloop httptools
 info "Python packages installed."
 
+# -- Session secret ------------------------------------------------------------
+# SECRET_KEY signs the login session cookie. Generate a unique random key on
+# first boot and persist it. It is regenerated only if missing or still the
+# placeholder — never on a normal update, so existing logins survive upgrades.
+step "Ensuring a unique session secret"
+ENV_FILE="$APP_DIR/backend/.env"
+touch "$ENV_FILE"
+if ! grep -q '^SECRET_KEY=.\+' "$ENV_FILE" || grep -q '^SECRET_KEY=change-me' "$ENV_FILE"; then
+  SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+  sed -i '/^SECRET_KEY=/d' "$ENV_FILE"
+  echo "SECRET_KEY=$SECRET" >> "$ENV_FILE"
+  info "Generated a new session secret."
+else
+  info "Existing session secret preserved."
+fi
+chown "$DASH_USER:$DASH_USER" "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
 # -- Default config ------------------------------------------------------------
 if [ ! -f "$APP_DIR/backend/dashboard_config.json" ]; then
   if [ -f "$APP_DIR/backend/dashboard_config.example.json" ]; then

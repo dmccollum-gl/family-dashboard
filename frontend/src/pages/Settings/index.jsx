@@ -1500,10 +1500,11 @@ function PiDisplay() {
 // ── Restart Services ───────────────────────────────────────────────────────────
 
 function RestartServices() {
-  const [backendBusy, setBackendBusy] = useState(false);
-  const [displayBusy, setDisplayBusy] = useState(false);
-  const [msg,         setMsg]         = useState(null);
-  const [error,       setError]       = useState(null);
+  const [backendBusy,  setBackendBusy]  = useState(false);
+  const [displayBusy,  setDisplayBusy]  = useState(false);
+  const [msg,          setMsg]          = useState(null);
+  const [error,        setError]        = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null); // "pi" | "shutdown"
 
   const restart = async (target) => {
     const setB = target === "backend" ? setBackendBusy : setDisplayBusy;
@@ -1520,6 +1521,20 @@ function RestartServices() {
     } finally { setB(false); }
   };
 
+  const handlePiAction = async () => {
+    const action = confirmAction;
+    setConfirmAction(null);
+    setMsg(null); setError(null);
+    try {
+      await api.post(`/api/settings/restart/${action}`);
+      setMsg(action === "pi" ? "Pi is rebooting…" : "Pi is shutting down…");
+    } catch {
+      setError(`${action === "pi" ? "Reboot" : "Shutdown"} command failed.`);
+    }
+  };
+
+  const busy = backendBusy || displayBusy;
+
   return (
     <Section icon={<ReplayIcon />} title="Restart Services" defaultExpanded={false}>
       <Typography variant="body2" color="text.secondary">
@@ -1531,15 +1546,48 @@ function RestartServices() {
       <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
         <Button variant="outlined"
           startIcon={backendBusy ? <CircularProgress size={16} color="inherit" /> : <ReplayIcon />}
-          onClick={() => restart("backend")} disabled={backendBusy || displayBusy}>
+          onClick={() => restart("backend")} disabled={busy}>
           Restart Backend
         </Button>
         <Button variant="outlined"
           startIcon={displayBusy ? <CircularProgress size={16} color="inherit" /> : <TvIcon />}
-          onClick={() => restart("display")} disabled={backendBusy || displayBusy}>
+          onClick={() => restart("display")} disabled={busy}>
           Restart Display
         </Button>
+        <Button variant="outlined" color="warning"
+          startIcon={<RestartAltIcon />}
+          onClick={() => setConfirmAction("pi")} disabled={busy}>
+          Restart Pi
+        </Button>
+        <Button variant="outlined" color="error"
+          startIcon={<PowerSettingsNewIcon />}
+          onClick={() => setConfirmAction("shutdown")} disabled={busy}>
+          Shutdown Pi
+        </Button>
       </Box>
+
+      <Dialog open={!!confirmAction} onClose={() => setConfirmAction(null)}>
+        <DialogTitle>
+          {confirmAction === "pi" ? "Restart Pi?" : "Shutdown Pi?"}
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            {confirmAction === "pi"
+              ? "The Pi will reboot. The dashboard will be unavailable for about a minute."
+              : "The Pi will shut down completely. You will need to physically power it back on."}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirmAction(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            color={confirmAction === "pi" ? "warning" : "error"}
+            onClick={handlePiAction}
+          >
+            {confirmAction === "pi" ? "Yes, Restart" : "Yes, Shutdown"}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Section>
   );
 }
@@ -2714,14 +2762,16 @@ function parseUpdateProgress(logs) {
 // ── Software Updates (owner-only) ─────────────────────────────────────────────
 
 function UpdateSettings() {
-  const [version,     setVersion]     = useState(null);
-  const [checking,    setChecking]    = useState(false);
-  const [checkResult, setCheckResult] = useState(null);
-  const [applying,    setApplying]    = useState(false);
-  const [status,      setStatus]      = useState(null);
-  const [showLog,     setShowLog]     = useState(false);
-  const [backedUp,    setBackedUp]    = useState(false);
-  const [backingUp,   setBackingUp]   = useState(false);
+  const [version,         setVersion]         = useState(null);
+  const [checking,        setChecking]        = useState(false);
+  const [checkResult,     setCheckResult]     = useState(null);
+  const [applying,        setApplying]        = useState(false);
+  const [status,          setStatus]          = useState(null);
+  const [showLog,         setShowLog]         = useState(false);
+  const [backedUp,        setBackedUp]        = useState(false);
+  const [backingUp,       setBackingUp]       = useState(false);
+  const [autoUpdate,      setAutoUpdate]      = useState(false);
+  const [autoUpdateSaving, setAutoUpdateSaving] = useState(false);
   const pollRef  = useRef(null);
   const logBoxRef = useRef(null);
 
@@ -2799,6 +2849,7 @@ function UpdateSettings() {
 
   useEffect(() => {
     loadVersion();
+    api.get("/api/settings/update/auto").then(res => setAutoUpdate(res.data.enabled)).catch(() => {});
     // Resume tracking if an update is already in progress
     api.get("/api/settings/update/status")
       .then(res => {
@@ -2811,6 +2862,17 @@ function UpdateSettings() {
       })
       .catch(() => {});
   }, [loadVersion, startPolling]);
+
+  const handleAutoUpdateToggle = async (e) => {
+    const enabled = e.target.checked;
+    setAutoUpdate(enabled);
+    setAutoUpdateSaving(true);
+    try {
+      await api.post("/api/settings/update/auto", { enabled });
+    } catch {
+      setAutoUpdate(!enabled);
+    } finally { setAutoUpdateSaving(false); }
+  };
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
@@ -3043,6 +3105,22 @@ function UpdateSettings() {
               )}
             </Box>
           )}
+        </Box>
+      )}
+
+      {/* ── Auto-update toggle ───────────────────────────────────────────── */}
+      {isGitInstall && (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Switch
+            checked={autoUpdate}
+            onChange={handleAutoUpdateToggle}
+            disabled={autoUpdateSaving}
+            size="small"
+          />
+          <Typography variant="body2">
+            Auto-update every 15 minutes
+          </Typography>
+          {autoUpdateSaving && <CircularProgress size={14} />}
         </Box>
       )}
 

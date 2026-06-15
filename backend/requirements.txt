@@ -12,3 +12,4 @@ sqlalchemy
 itsdangerous
 starlette
 qrcode
+ptyprocess

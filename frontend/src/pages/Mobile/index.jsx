@@ -229,7 +229,7 @@ function TimeGrid({ days, eventsByDay, now, scrollRef }) {
                       {formatTime12(ev.start)}
                     </Typography>
                     <Typography sx={{
-                      fontSize: "0.6rem", fontWeight: 600, lineHeight: 1.2,
+                      fontSize: "0.3rem", fontWeight: 600, lineHeight: 1.2,
                       overflow: "hidden", display: "-webkit-box",
                       WebkitLineClamp: 3, WebkitBoxOrient: "vertical",
                     }}>
@@ -307,7 +307,7 @@ function DayView({ day }) {
         <Box sx={{ px: 1, py: 0.5, display: "flex", flexWrap: "wrap", gap: 0.5, borderBottom: "1px solid", borderColor: "divider", flexShrink: 0 }}>
           {allDay.map(ev => (
             <Chip key={ev.id} label={ev.title} size="small"
-              sx={{ bgcolor: ev.color, color: "#fff", fontSize: "0.7rem", height: 22 }} />
+              sx={{ bgcolor: ev.color, color: "#fff", fontSize: "0.35rem", height: 22 }} />
           ))}
         </Box>
       )}
@@ -417,7 +417,7 @@ function WeekView({ day }) {
           {allDayByDay.map((evs, i) => (
             <Box key={i} sx={{ flex: 1, px: 0.25, display: "flex", flexDirection: "column", gap: 0.25 }}>
               {evs.map(ev => (
-                <Box key={ev.id} sx={{ bgcolor: ev.color, color: "#fff", borderRadius: 0.5, px: 0.5, fontSize: "0.55rem", fontWeight: 600, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+                <Box key={ev.id} sx={{ bgcolor: ev.color, color: "#fff", borderRadius: 0.5, px: 0.5, fontSize: "0.275rem", fontWeight: 600, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
                   {ev.title}
                 </Box>
               ))}

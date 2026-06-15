@@ -31,21 +31,15 @@ if ! command -v git &>/dev/null; then
     exit 1
 fi
 
-# Fetch latest commits + release tags, then hard-reset to the newest release.
+# Fetch latest commits + release tags, then hard-reset to origin/main so every
+# commit (tagged or not) is picked up automatically.
 # Using reset --hard instead of pull so that any files deployed directly
 # (e.g. via SCP during development) never cause a merge conflict.
 echo "--- Pulling from GitHub ---"
 sudo -u dashboard git -C "$APP_DIR" fetch --tags --force origin main
 
-# Prefer the newest vX.Y.Z release tag; fall back to main if none exist.
-LATEST_TAG=$(sudo -u dashboard git -C "$APP_DIR" tag --list 'v*' --sort=-v:refname | head -1)
-if [ -n "$LATEST_TAG" ]; then
-    echo "--- Updating to release $LATEST_TAG ---"
-    sudo -u dashboard git -C "$APP_DIR" reset --hard "$LATEST_TAG"
-else
-    echo "--- No release tags found; updating to latest main ---"
-    sudo -u dashboard git -C "$APP_DIR" reset --hard origin/main
-fi
+echo "--- Updating to latest main ---"
+sudo -u dashboard git -C "$APP_DIR" reset --hard origin/main
 echo ""
 
 # Re-run setup.sh (idempotent — only installs/updates what changed)

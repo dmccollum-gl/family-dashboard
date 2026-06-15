@@ -252,6 +252,8 @@ dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl start cloudflared
 dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop cloudflared
 dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cloudflared
 dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/update.sh
+dashboard ALL=(ALL) NOPASSWD: /sbin/reboot
+dashboard ALL=(ALL) NOPASSWD: /sbin/shutdown
 SUDOERS
 chmod 0440 /etc/sudoers.d/dashboard
 info "sudoers rules installed."

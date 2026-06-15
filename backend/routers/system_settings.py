@@ -234,6 +234,26 @@ def restart_display(_user=Depends(require_owner)):
     return {"status": "restarting"}
 
 
+@router.post("/restart/pi")
+def restart_pi(_user=Depends(require_owner)):
+    threading.Thread(
+        target=_after,
+        args=(2.0, lambda: subprocess.run(["sudo", "reboot"], check=False)),
+        daemon=True,
+    ).start()
+    return {"status": "rebooting"}
+
+
+@router.post("/restart/shutdown")
+def shutdown_pi(_user=Depends(require_owner)):
+    threading.Thread(
+        target=_after,
+        args=(2.0, lambda: subprocess.run(["sudo", "shutdown", "-h", "now"], check=False)),
+        daemon=True,
+    ).start()
+    return {"status": "shutting_down"}
+
+
 # ── Cloudflare Tunnel ──────────────────────────────────────────────────────────
 
 @router.get("/tunnel")
@@ -820,41 +840,25 @@ def get_version():
 
 @router.get("/update/check")
 def check_update(_user=Depends(require_owner)):
-    """Check for a newer release. Tracks vX.Y.Z tags; falls back to main if none."""
+    """Check for updates by comparing HEAD against origin/main."""
     if not (_APP_DIR / ".git").exists():
         return {"error": "Not a git installation — updates not available."}
     try:
-        # Pull down both new commits on main and any new release tags.
         _, err, rc = _git_run("fetch", "--tags", "--force", "origin", "main", timeout=45)
         if rc != 0:
             return {"error": f"git fetch failed: {err or 'no internet?'}"}
 
-        local, _, _ = _git_run("rev-parse", "--short", "HEAD")
-        latest_tag  = _latest_release_tag()
-
-        if latest_tag:
-            # Release channel: compare HEAD against the newest release tag.
-            tag_commit, _, _ = _git_run("rev-parse", "--short", f"{latest_tag}^{{commit}}")
-            cur_tag,    _, crc = _git_run("describe", "--tags", "--abbrev=0")
-            log,        _, _ = _git_run("log", f"HEAD..{latest_tag}", "--oneline")
-            changes = [l for l in log.splitlines() if l.strip()]
-            return {
-                "channel":         "release",
-                "current_version": cur_tag if crc == 0 else local,
-                "latest_version":  latest_tag,
-                "up_to_date":      local == tag_commit or len(changes) == 0,
-                "changes":         changes,
-                "count":           len(changes),
-            }
-
-        # No releases published yet — track main (legacy behaviour).
-        remote, _, _ = _git_run("rev-parse", "--short", "origin/main")
-        log,    _, _ = _git_run("log", "HEAD..origin/main", "--oneline")
-        changes = [l for l in log.splitlines() if l.strip()]
+        local,  _, _   = _git_run("rev-parse", "--short", "HEAD")
+        remote, _, _   = _git_run("rev-parse", "--short", "origin/main")
+        log,    _, _   = _git_run("log", "HEAD..origin/main", "--oneline")
+        changes        = [l for l in log.splitlines() if l.strip()]
+        latest_tag     = _latest_release_tag()
+        cur_tag, _, crc = _git_run("describe", "--tags", "--abbrev=0")
         return {
             "channel":         "main",
-            "current_version": local,
+            "current_version": cur_tag if crc == 0 else local,
             "latest_version":  remote,
+            "latest_tag":      latest_tag,
             "up_to_date":      local == remote,
             "changes":         changes,
             "count":           len(changes),
@@ -863,6 +867,19 @@ def check_update(_user=Depends(require_owner)):
         return {"error": "Timed out — check your internet connection."}
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.get("/update/auto")
+def get_auto_update(_user=Depends(require_owner)):
+    cfg = _read_config()
+    au  = cfg.get("auto_update", {})
+    return {"enabled": au.get("enabled", False)}
+
+
+@router.post("/update/auto")
+def set_auto_update(body: dict, _user=Depends(require_owner)):
+    _write_config({"auto_update": {"enabled": bool(body.get("enabled", False))}})
+    return {"status": "saved"}
 
 
 @router.post("/update/apply")
@@ -1014,6 +1031,66 @@ def _display_schedule_ticker():
 
 # Start scheduler when the router module loads (daemon thread dies with the process)
 threading.Thread(target=_display_schedule_ticker, daemon=True).start()
+
+
+def _auto_update_ticker():
+    """Background thread: check origin/main every 15 min and apply if ahead."""
+    _time.sleep(60)  # wait for startup to settle
+    while True:
+        _time.sleep(15 * 60)
+        try:
+            cfg = _read_config()
+            if not cfg.get("auto_update", {}).get("enabled", False):
+                continue
+            _, _, rc = _git_run("fetch", "--tags", "--force", "origin", "main", timeout=45)
+            if rc != 0:
+                continue
+            local,  _, _ = _git_run("rev-parse", "HEAD")
+            remote, _, _ = _git_run("rev-parse", "origin/main")
+            if local.strip() == remote.strip():
+                continue
+            with _UPDATE_LOCK:
+                if _update_state["running"]:
+                    continue
+            update_script = _APP_DIR / "pi" / "update.sh"
+            if not update_script.exists():
+                continue
+
+            def _run():
+                global _update_state
+                with _UPDATE_LOCK:
+                    _update_state = {
+                        "running":   True,
+                        "log":       ["[auto-update] Update triggered automatically."],
+                        "exit_code": None,
+                        "started":   datetime.now().isoformat(),
+                    }
+                try:
+                    proc = subprocess.Popen(
+                        ["sudo", "bash", str(update_script)],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, bufsize=1,
+                    )
+                    for line in proc.stdout:
+                        with _UPDATE_LOCK:
+                            _update_state["log"].append(line.rstrip())
+                    proc.wait(timeout=900)
+                    with _UPDATE_LOCK:
+                        _update_state["exit_code"] = proc.returncode
+                except Exception as e:
+                    with _UPDATE_LOCK:
+                        _update_state["log"].append(f"ERROR: {e}")
+                        _update_state["exit_code"] = -1
+                finally:
+                    with _UPDATE_LOCK:
+                        _update_state["running"] = False
+
+            threading.Thread(target=_run, daemon=True).start()
+        except Exception:
+            pass
+
+
+threading.Thread(target=_auto_update_ticker, daemon=True).start()
 
 
 @router.get("/display_schedule")

@@ -12,6 +12,7 @@ import routers.rss as rss_router
 import routers.calendar as calendar_router
 import routers.system_info as system_info_router
 import routers.setup as setup_router
+import routers.terminal as terminal_router
 
 app = FastAPI(title="Dashboard")
 
@@ -34,6 +35,7 @@ app.include_router(rss_router.router,       prefix="/api/rss",        tags=["RSS
 app.include_router(calendar_router.router,  prefix="/api/calendar",   tags=["Calendar"])
 app.include_router(system_info_router.router, prefix="/api/system",   tags=["System"])
 app.include_router(setup_router.router,       prefix="/api/setup",    tags=["Setup"])
+app.include_router(terminal_router.router,    prefix="/api/terminal", tags=["Terminal"])
 
 
 @app.get("/api/health")

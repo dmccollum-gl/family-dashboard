@@ -234,6 +234,32 @@ def restart_display(_user=Depends(require_owner)):
     return {"status": "restarting"}
 
 
+@router.post("/ssh")
+def set_ssh_credentials(body: dict, _user=Depends(require_owner)):
+    """Set the SSH username/password for the dashboard OS user."""
+    username = (body.get("username") or "dashboard").strip()
+    password = body.get("password", "")
+    if not password or len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    if any(c in password for c in "\n\r"):
+        raise HTTPException(status_code=400, detail="Password may not contain line breaks.")
+    if not username or any(c in username for c in ":\n\r "):
+        raise HTTPException(status_code=400, detail="Invalid username.")
+    try:
+        r = subprocess.run(
+            ["sudo", "chpasswd"],
+            input=f"{username}:{password}\n",
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"chpasswd failed: {r.stderr.strip() or 'unknown error'}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="Command timed out.")
+    subprocess.run(["sudo", "systemctl", "enable", "ssh"], check=False, timeout=10, capture_output=True)
+    subprocess.run(["sudo", "systemctl", "start",  "ssh"], check=False, timeout=10, capture_output=True)
+    return {"status": "saved"}
+
+
 @router.post("/restart/pi")
 def restart_pi(_user=Depends(require_owner)):
     threading.Thread(

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from "react";
 import {
   Box, Typography, Button, Divider, Alert, TextField,
   CircularProgress, LinearProgress, List, ListItem, Avatar, Chip, Menu, MenuItem,
@@ -42,6 +42,8 @@ import AutoFixHighIcon          from "@mui/icons-material/AutoFixHigh";
 import SystemUpdateAltIcon       from "@mui/icons-material/SystemUpdateAlt";
 import AccessTimeIcon            from "@mui/icons-material/AccessTime";
 import PowerSettingsNewIcon      from "@mui/icons-material/PowerSettingsNew";
+import TerminalIcon              from "@mui/icons-material/Terminal";
+import VpnKeyIcon                from "@mui/icons-material/VpnKey";
 import { googleLogout, useGoogleLogin } from "@react-oauth/google";
 import { useNavigate } from "react-router-dom";
 import api from "../../api/client";
@@ -3139,6 +3141,164 @@ function UpdateSettings() {
   );
 }
 
+// ── SSH Access ────────────────────────────────────────────────────────────────
+
+function SSHSettings() {
+  const [username, setUsername] = useState("dashboard");
+  const [password, setPassword] = useState("");
+  const [confirm,  setConfirm]  = useState("");
+  const [show,     setShow]     = useState(false);
+  const [saving,   setSaving]   = useState(false);
+  const [msg,      setMsg]      = useState(null);
+  const [error,    setError]    = useState(null);
+
+  const handleSave = async () => {
+    setMsg(null); setError(null);
+    if (password !== confirm) { setError("Passwords do not match."); return; }
+    if (password.length < 6)  { setError("Password must be at least 6 characters."); return; }
+    setSaving(true);
+    try {
+      await api.post("/api/settings/ssh", { username, password });
+      setMsg("SSH credentials updated. You can now log in with these credentials.");
+      setPassword(""); setConfirm("");
+    } catch (e) {
+      setError(e?.response?.data?.detail || "Failed to update SSH credentials.");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Section icon={<VpnKeyIcon />} title="SSH Access" defaultExpanded={false}>
+      <Typography variant="body2" color="text.secondary">
+        Set the username and password used to SSH into the Pi. SSH will be enabled automatically.
+      </Typography>
+      {msg   && <Alert severity="success" onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error"   onClose={() => setError(null)}>{error}</Alert>}
+      <TextField
+        label="Username" size="small" value={username}
+        onChange={e => setUsername(e.target.value)}
+        sx={{ maxWidth: 260 }}
+      />
+      <TextField
+        label="New Password" size="small" type={show ? "text" : "password"}
+        value={password} onChange={e => setPassword(e.target.value)}
+        sx={{ maxWidth: 260 }}
+        InputProps={{
+          endAdornment: (
+            <InputAdornment position="end">
+              <IconButton size="small" onClick={() => setShow(v => !v)}>
+                {show ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+              </IconButton>
+            </InputAdornment>
+          ),
+        }}
+      />
+      <TextField
+        label="Confirm Password" size="small" type={show ? "text" : "password"}
+        value={confirm} onChange={e => setConfirm(e.target.value)}
+        sx={{ maxWidth: 260 }}
+      />
+      <Box>
+        <Button
+          variant="contained" onClick={handleSave}
+          disabled={saving || !password || !confirm}
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+        >
+          {saving ? "Saving…" : "Save SSH Credentials"}
+        </Button>
+      </Box>
+    </Section>
+  );
+}
+
+// ── Terminal ──────────────────────────────────────────────────────────────────
+
+function PiTerminal() {
+  const containerRef = useRef(null);
+  const termRef      = useRef(null);
+  const fitRef       = useRef(null);
+  const wsRef        = useRef(null);
+
+  useLayoutEffect(() => {
+    let term, fit, ws;
+
+    import("@xterm/xterm").then(({ Terminal }) =>
+      import("@xterm/addon-fit").then(({ FitAddon }) => {
+        term = new Terminal({
+          cursorBlink: true,
+          fontSize: 13,
+          fontFamily: "'Cascadia Code', 'Fira Code', 'Courier New', monospace",
+          theme: { background: "#1e1e1e", foreground: "#d4d4d4", cursor: "#aeafad" },
+          scrollback: 2000,
+        });
+        fit = new FitAddon();
+        term.loadAddon(fit);
+        if (containerRef.current) {
+          term.open(containerRef.current);
+          fit.fit();
+        }
+        termRef.current = term;
+        fitRef.current  = fit;
+
+        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+        ws = new WebSocket(`${proto}//${window.location.host}/api/terminal/ws`);
+        ws.binaryType = "arraybuffer";
+        wsRef.current  = ws;
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        };
+        ws.onmessage = (e) => {
+          term.write(new Uint8Array(e.data));
+        };
+        ws.onclose = () => {
+          term.write("\r\n\r\n[Connection closed]\r\n");
+        };
+        ws.onerror = () => {
+          term.write("\r\n[Connection error — are you signed in as owner?]\r\n");
+        };
+
+        term.onData(data => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+        });
+
+        const handleResize = () => {
+          fit.fit();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+          }
+        };
+        window.addEventListener("resize", handleResize);
+
+        return () => window.removeEventListener("resize", handleResize);
+      })
+    );
+
+    return () => {
+      try { ws?.close(); } catch {}
+      try { term?.dispose(); } catch {}
+    };
+  }, []);
+
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                 px: 2, py: 1, bgcolor: "grey.900", borderBottom: "1px solid #333" }}>
+        <Typography variant="caption" sx={{ color: "#aaa", fontFamily: "monospace" }}>
+          dashboard@pi ~
+        </Typography>
+        <Button size="small" sx={{ color: "#aaa", minWidth: 0 }}
+          onClick={() => {
+            try { wsRef.current?.close(); } catch {}
+            try { termRef.current?.dispose(); } catch {}
+          }}>
+          Disconnect
+        </Button>
+      </Box>
+      <Box ref={containerRef} sx={{ flex: 1, minHeight: 0, bgcolor: "#1e1e1e", "& .xterm": { height: "100%" } }} />
+    </Box>
+  );
+}
+
 // ── Display Schedule ──────────────────────────────────────────────────────────
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -3436,6 +3596,8 @@ export default function Settings() {
       (isOwner || !oauthConfigured)   && { value: "oauth",       label: "OAuth / Google",     icon: <LockIcon fontSize="small" /> },
       isOwner                         && { value: "tunnel",      label: "FQDN Setup",         icon: <RouterIcon fontSize="small" /> },
       isOwner                         && { value: "updates",     label: "Updates",            icon: <SystemUpdateAltIcon fontSize="small" /> },
+      isOwner                         && { value: "ssh",         label: "SSH Access",         icon: <VpnKeyIcon fontSize="small" /> },
+      isOwner                         && { value: "terminal",    label: "Terminal",           icon: <TerminalIcon fontSize="small" /> },
       isOwner                         && { value: "backup",      label: "Backup & Restore",   icon: <BackupIcon fontSize="small" /> },
       isOwner                         && { value: "reset",       label: "Reset Install",      icon: <RestartAltIcon fontSize="small" /> },
     ].filter(Boolean);
@@ -3457,6 +3619,8 @@ export default function Settings() {
       case "oauth":            return <OAuthSettings />;
       case "tunnel":           return <TunnelSettings />;
       case "updates":          return <UpdateSettings />;
+      case "ssh":              return <SSHSettings />;
+      case "terminal":         return <PiTerminal />;
       case "backup":           return <BackupSection />;
       case "reset":            return <ResetSection />;
       default:                 return null;
@@ -3531,11 +3695,17 @@ export default function Settings() {
         </Box>
 
         {/* Content pane */}
-        <Box sx={{ flex: 1, overflowY: "auto", p: 3 }}>
-          <Box sx={{ maxWidth: 680 }}>
-            {renderContent()}
+        {tab === "terminal" ? (
+          <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, overflow: "hidden" }}>
+            <PiTerminal />
           </Box>
-        </Box>
+        ) : (
+          <Box sx={{ flex: 1, overflowY: "auto", p: 3 }}>
+            <Box sx={{ maxWidth: 680 }}>
+              {renderContent()}
+            </Box>
+          </Box>
+        )}
       </Box>
     </Box>
   );

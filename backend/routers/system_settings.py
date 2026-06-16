@@ -246,6 +246,19 @@ def set_ssh_credentials(body: dict, _user=Depends(require_owner)):
     if not username or any(c in username for c in ":\n\r "):
         raise HTTPException(status_code=400, detail="Invalid username.")
     try:
+        # Create the login account if it doesn't exist yet — otherwise chpasswd
+        # fails (e.g. "user david ... password not changed") for any name other
+        # than the pre-existing 'dashboard' account.
+        exists = subprocess.run(["id", "-u", username],
+                                capture_output=True).returncode == 0
+        if not exists:
+            r = subprocess.run(
+                ["sudo", "useradd", "-m", "-s", "/bin/bash", "-G", "sudo", username],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0:
+                raise HTTPException(status_code=500,
+                    detail=f"Could not create user '{username}': {r.stderr.strip() or 'unknown error'}")
         r = subprocess.run(
             ["sudo", "chpasswd"],
             input=f"{username}:{password}\n",
@@ -253,6 +266,9 @@ def set_ssh_credentials(body: dict, _user=Depends(require_owner)):
         )
         if r.returncode != 0:
             raise HTTPException(status_code=500, detail=f"chpasswd failed: {r.stderr.strip() or 'unknown error'}")
+        # Make sure the account is unlocked so SSH login works.
+        subprocess.run(["sudo", "usermod", "-U", username],
+                       check=False, timeout=10, capture_output=True)
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=500, detail="Command timed out.")
     subprocess.run(["sudo", "systemctl", "enable", "ssh"], check=False, timeout=10, capture_output=True)

@@ -39,11 +39,16 @@ def _require_owner_ws(websocket: WebSocket) -> bool:
 
 @router.websocket("/ws")
 async def terminal_ws(websocket: WebSocket):
+    # Accept first, then authorize, so an auth failure reaches the browser as a
+    # readable message instead of looking like a generic connection error.
+    await websocket.accept()
     if not _require_owner_ws(websocket):
+        await websocket.send_text(
+            "\r\n[Not authorized — you must be signed in as the owner. "
+            "Sign in on this device, then reopen the terminal.]\r\n"
+        )
         await websocket.close(code=4403)
         return
-
-    await websocket.accept()
 
     try:
         import ptyprocess

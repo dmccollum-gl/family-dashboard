@@ -242,7 +242,9 @@ server {
 NGINX
 ln -sf /etc/nginx/sites-available/dashboard /etc/nginx/sites-enabled/dashboard
 rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl enable --now nginx
+# enable + reload so config changes (e.g. the WebSocket block) take effect on an
+# in-place update, not just on a fresh boot.
+nginx -t && systemctl enable nginx && systemctl reload-or-restart nginx
 
 # -- udev rule -----------------------------------------------------------------
 step "Adding udev DRI rule"
@@ -264,6 +266,8 @@ dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/update.sh
 dashboard ALL=(ALL) NOPASSWD: /sbin/reboot
 dashboard ALL=(ALL) NOPASSWD: /sbin/shutdown
 dashboard ALL=(ALL) NOPASSWD: /usr/sbin/chpasswd
+dashboard ALL=(ALL) NOPASSWD: /usr/sbin/useradd
+dashboard ALL=(ALL) NOPASSWD: /usr/sbin/usermod
 dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable ssh
 dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl start ssh
 SUDOERS

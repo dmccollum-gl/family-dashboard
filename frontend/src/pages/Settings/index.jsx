@@ -1543,6 +1543,13 @@ function RestartServices() {
         Restart the backend API or the Pi display process without rebooting.
         The backend briefly drops and reconnects automatically.
       </Typography>
+      <Alert severity="info" icon={false} sx={{ py: 0.75 }}>
+        <Typography variant="caption">
+          <strong>Exit the kiosk display:</strong> connect a keyboard to the Pi and press{" "}
+          <Box component="span" sx={{ fontFamily: "monospace", fontWeight: 700 }}>Ctrl + X</Box>.
+          The display relaunches automatically a few seconds later.
+        </Typography>
+      </Alert>
       {msg   && <Alert severity="info"  onClose={() => setMsg(null)}>{msg}</Alert>}
       {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
       <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
@@ -2923,6 +2930,13 @@ function UpdateSettings() {
         Pull the latest features and bug fixes from GitHub. Your settings, users, and
         config are never overwritten — only the application code is updated.
       </Typography>
+      <Alert severity="info" icon={false} sx={{ py: 0.75 }}>
+        <Typography variant="caption">
+          <strong>Exit the kiosk display:</strong> connect a keyboard to the Pi and press{" "}
+          <Box component="span" sx={{ fontFamily: "monospace", fontWeight: 700 }}>Ctrl + X</Box>.
+          The display relaunches automatically a few seconds later.
+        </Typography>
+      </Alert>
 
       {/* ── Current version ─────────────────────────────────────────────── */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>

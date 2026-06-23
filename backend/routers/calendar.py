@@ -42,8 +42,42 @@ def _now_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
+# Consecutive refresh failures per user (in-memory). After _MAX_REFRESH_FAILURES
+# strikes the stored token is deleted so the user is signed out and must sign in
+# again, instead of looping forever on a dead token. Reset on any success.
+_refresh_failures: dict[str, int] = {}
+_MAX_REFRESH_FAILURES = 3
+
+
+def _clear_user_token(email: str) -> None:
+    """Delete a user's stored Google token — logs them out of calendar access."""
+    db = SessionLocal()
+    try:
+        p = db.get(UserPrefs, email)
+        if p:
+            p.access_token  = None
+            p.refresh_token = None
+            p.token_expiry  = None
+            db.commit()
+    finally:
+        db.close()
+
+
+async def _note_refresh_failure(email: str) -> None:
+    """Record a failed refresh; after 3 strikes, delete the dead token."""
+    n = _refresh_failures.get(email, 0) + 1
+    _refresh_failures[email] = n
+    if n >= _MAX_REFRESH_FAILURES:
+        await asyncio.to_thread(_clear_user_token, email)
+        _refresh_failures.pop(email, None)
+
+
 async def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
-    """Return a valid access token, refreshing via refresh_token if needed."""
+    """Return a valid access token, refreshing via refresh_token if needed.
+
+    If the refresh fails _MAX_REFRESH_FAILURES times in a row, the stored token
+    is deleted (the user is signed out) rather than retried indefinitely.
+    """
     now_ms    = _now_ms()
     buffer_ms = 5 * 60 * 1000
 
@@ -67,12 +101,14 @@ async def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
                 "client_secret": client_secret,
             })
         if res.status_code != 200:
+            await _note_refresh_failure(user.email)
             return None
         td          = res.json()
         new_token   = td.get("access_token")
         expires_in  = td.get("expires_in", 3600)
         expiry_ms   = int((datetime.now(timezone.utc).timestamp() + expires_in) * 1000)
         if not new_token:
+            await _note_refresh_failure(user.email)
             return None
 
         def _update_db():
@@ -87,8 +123,10 @@ async def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
                 db.close()
 
         await asyncio.to_thread(_update_db)
+        _refresh_failures.pop(user.email, None)   # success → clear the strike count
         return new_token
     except Exception:
+        await _note_refresh_failure(user.email)
         return None
 
 

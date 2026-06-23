@@ -338,10 +338,27 @@ info "Marked as installed: $APP_DIR/.installed"
 
 # -- Start services ------------------------------------------------------------
 step "Starting services"
-systemctl restart dashboard-backend.service  2>/dev/null && info "Backend started." \
-  || warn "Backend failed to start. Check: journalctl -u dashboard-backend"
+# The display is a separate service — safe to restart inline.
 systemctl restart dashboard-display.service  2>/dev/null && info "Display started." \
   || warn "Display failed to start. Check: journalctl -u dashboard-display"
+
+# Restarting dashboard-backend is special. When this script is launched by the
+# in-app updater it runs *inside* the dashboard-backend systemd cgroup, so a
+# direct `systemctl restart` kills this very script at the final step (the
+# update then reports a bogus failure, exit code -15). Schedule the restart in a
+# detached transient unit a few seconds out, so setup.sh finishes and the
+# updater reports success first; the backend then restarts cleanly on its own.
+if command -v systemd-run >/dev/null 2>&1; then
+  systemd-run --on-active=5 --collect \
+    systemctl restart dashboard-backend.service >/dev/null 2>&1 \
+    && info "Backend restart scheduled (5s) — survives the updater exiting." \
+    || { systemctl restart dashboard-backend.service 2>/dev/null \
+         && info "Backend started." \
+         || warn "Backend failed to start. Check: journalctl -u dashboard-backend"; }
+else
+  systemctl restart dashboard-backend.service 2>/dev/null && info "Backend started." \
+    || warn "Backend failed to start. Check: journalctl -u dashboard-backend"
+fi
 
 # -- Done ----------------------------------------------------------------------
 IP=$(hostname -I | awk '{print $1}')

@@ -113,7 +113,7 @@ function Section({ icon, title, children }) {
 function GoogleSignInButton({ onSuccess, onError, hasSecret, label = "Sign in with Google" }) {
   const login = useGoogleLogin(
     hasSecret
-      ? { flow: "auth-code", scope: CALENDAR_SCOPE, onSuccess, onError: () => onError("Sign-in was cancelled or failed.") }
+      ? { flow: "auth-code", scope: CALENDAR_SCOPE, prompt: "consent", onSuccess, onError: () => onError("Sign-in was cancelled or failed.") }
       : { scope: CALENDAR_SCOPE, onSuccess, onError: () => onError("Sign-in was cancelled or failed.") }
   );
   return <Button variant="contained" onClick={() => login()}>{label}</Button>;

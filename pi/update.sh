@@ -15,31 +15,35 @@
 # ---------------------------------------------------------------------------
 
 APP_DIR=/opt/dashboard
+REPO_URL="https://github.com/dmccollum-gl/family-dashboard.git"
 
 echo "=== Family Dashboard Update $(date) ==="
 echo ""
-
-# Verify this is a git installation
-if [ ! -d "$APP_DIR/.git" ]; then
-    echo "ERROR: $APP_DIR is not a git repository."
-    echo "Updates only work when the dashboard was installed via the Pi image."
-    exit 1
-fi
 
 if ! command -v git &>/dev/null; then
     echo "ERROR: git is not installed."
     exit 1
 fi
 
+# Bootstrap a git checkout in place if this install wasn't set up from git.
+# Runtime files (dashboard.db, dashboard_config.json, .env, frontend-dist/) are
+# untracked/gitignored, so the reset below leaves them untouched.
+if [ ! -d "$APP_DIR/.git" ]; then
+    echo "--- No git repo found — linking $APP_DIR to GitHub ---"
+    sudo -u dashboard git -C "$APP_DIR" init -q
+    sudo -u dashboard git -C "$APP_DIR" remote add origin "$REPO_URL" 2>/dev/null \
+      || sudo -u dashboard git -C "$APP_DIR" remote set-url origin "$REPO_URL"
+fi
+
 # Fetch latest commits + release tags, then hard-reset to origin/main so every
-# commit (tagged or not) is picked up automatically.
-# Using reset --hard instead of pull so that any files deployed directly
-# (e.g. via SCP during development) never cause a merge conflict.
+# commit (tagged or not) is picked up automatically. reset --hard (not pull)
+# also lets it adopt an existing non-git tree and ignores SCP-deployed changes.
 echo "--- Pulling from GitHub ---"
 sudo -u dashboard git -C "$APP_DIR" fetch --tags --force origin main
 
 echo "--- Updating to latest main ---"
 sudo -u dashboard git -C "$APP_DIR" reset --hard origin/main
+sudo -u dashboard git -C "$APP_DIR" branch -M main 2>/dev/null || true
 echo ""
 
 # Re-run setup.sh (idempotent — only installs/updates what changed)

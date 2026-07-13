@@ -859,10 +859,16 @@ def _latest_release_tag() -> str | None:
 
 @router.get("/update/version")
 def get_version():
-    """Return the currently-installed version (release tag if on one, else commit)."""
-    git_dir = _APP_DIR / ".git"
+    """Return the currently-installed version. An install is 'installed'
+    (updatable) as long as the update script exists — a device not yet linked to
+    git is still updatable, because the first update bootstraps the git checkout.
+    """
+    can_update = (_APP_DIR / "pi" / "update.sh").exists()
+    git_dir    = _APP_DIR / ".git"
     if not git_dir.exists():
-        return {"installed": False, "commit": None, "date": None, "branch": None}
+        # Not linked to GitHub yet, but still updatable — updating links it.
+        return {"installed": can_update, "git_linked": False,
+                "commit": None, "date": None, "branch": None, "tag": None}
     try:
         commit, _, _ = _git_run("rev-parse", "--short", "HEAD")
         date,   _, _ = _git_run("log", "-1", "--format=%ci")
@@ -870,21 +876,31 @@ def get_version():
         # Exact release tag at HEAD, if any (e.g. "v1.2.0").
         tag, _, trc = _git_run("describe", "--tags", "--exact-match")
         return {
-            "installed": True,
-            "commit":    commit,
-            "date":      date,
-            "branch":    branch,
-            "tag":       tag if trc == 0 else None,
+            "installed":  True,
+            "git_linked": True,
+            "commit":     commit,
+            "date":       date,
+            "branch":     branch,
+            "tag":        tag if trc == 0 else None,
         }
     except Exception as e:
-        return {"installed": False, "error": str(e)}
+        return {"installed": can_update, "git_linked": False, "error": str(e)}
 
 
 @router.get("/update/check")
 def check_update(_user=Depends(require_owner)):
-    """Check for updates by comparing HEAD against origin/main."""
+    """Check for updates by comparing HEAD against origin/main. A device not yet
+    linked to git reports that the first update will link and install it."""
     if not (_APP_DIR / ".git").exists():
-        return {"error": "Not a git installation — updates not available."}
+        return {
+            "channel":         "bootstrap",
+            "current_version": "not linked",
+            "latest_version":  "latest",
+            "up_to_date":      False,
+            "changes":         ["This device isn't linked to GitHub yet — updating "
+                                "will connect it and install the latest version."],
+            "count":           1,
+        }
     try:
         _, err, rc = _git_run("fetch", "--tags", "--force", "origin", "main", timeout=45)
         if rc != 0:
@@ -931,8 +947,7 @@ def apply_update(_user=Depends(require_owner)):
     with _UPDATE_LOCK:
         if _update_state["running"]:
             raise HTTPException(status_code=409, detail="An update is already in progress.")
-        if not (_APP_DIR / ".git").exists():
-            raise HTTPException(status_code=400, detail="Not a git installation.")
+        # No .git requirement — update.sh bootstraps a git checkout if needed.
         update_script = _APP_DIR / "pi" / "update.sh"
         if not update_script.exists():
             raise HTTPException(status_code=400, detail=f"Update script not found: {update_script}")

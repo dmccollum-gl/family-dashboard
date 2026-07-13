@@ -2941,7 +2941,7 @@ function UpdateSettings() {
       {/* ── Current version ─────────────────────────────────────────────── */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
         <Typography variant="body2" fontWeight={500}>Installed version:</Typography>
-        {isGitInstall ? (
+        {version?.git_linked ? (
           <>
             <Chip size="small" label={version.commit}
               sx={{ fontFamily: "monospace", fontSize: "0.75rem" }} />
@@ -2954,17 +2954,27 @@ function UpdateSettings() {
               <Chip size="small" label={`branch: ${version.branch}`} color="warning" variant="outlined" />
             )}
           </>
+        ) : isGitInstall ? (
+          <Chip size="small" label="Not linked to GitHub yet" color="info" variant="outlined" />
         ) : (
           <Chip size="small" label="Not a git install" color="warning" />
         )}
       </Box>
 
-      {/* ── Not a git install ────────────────────────────────────────────── */}
+      {/* ── Not linked yet — the first update connects it ─────────────────── */}
+      {isGitInstall && !version?.git_linked && (
+        <Alert severity="info">
+          This device isn't linked to GitHub yet. Click <strong>Check for Updates</strong>,
+          then <strong>Apply Update</strong> — the first update connects it to GitHub and
+          installs the latest version. Your settings, users, and config are preserved.
+        </Alert>
+      )}
+
+      {/* ── No update script at all (truly cannot update) ─────────────────── */}
       {!isGitInstall && (
         <Alert severity="info">
-          Automatic updates are only available on Pis that were set up via the
-          official image (installed from GitHub). Manual installs cannot use
-          this feature.
+          Automatic updates aren't available on this install — the update script
+          (<code>pi/update.sh</code>) is missing.
         </Alert>
       )}
 

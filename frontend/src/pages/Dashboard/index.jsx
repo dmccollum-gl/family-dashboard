@@ -433,20 +433,23 @@ function greedyColumns(events, colField, totalField) {
   return sorted;
 }
 
-// Lays out a day's timed events in stable per-calendar columns (ordered by
-// calendarOrder) instead of raw greedy packing by start time — so a given
-// person/calendar always lands in the same slot relative to whoever it's
-// actually double-booked against, instead of shuffling around day to day.
+// Assigns _col/_total/_subCol/_subTotal among a list of same-tier "peer"
+// events (either all of a day's root events, or all the children sharing one
+// direct container). Must be called per-tier, after containment is resolved
+// — a same-calendar double-booking that turns out to be contained inside
+// another peer's tier needs its sub-columns computed among only that tier's
+// siblings, not that calendar's events for the whole day.
 //
-// Width is NOT "how many calendars have any event today" — a calendar whose
-// events never actually overlap anyone else that day gets full width. Only
+// Width is NOT "how many calendars are in this peer group" — a calendar
+// whose events never actually overlap another peer gets full width. Only
 // calendars with a genuine time conflict share a narrower slot: events are
 // grouped into connected components by real cross-calendar time overlap, and
 // each component gets its own compact, stably-ordered set of columns.
-// Same-calendar double-bookings still sub-divide within that calendar's slot.
-function layoutTimedEvents(events, calendarOrder) {
+// Same-calendar double-bookings within a tier still sub-divide via
+// greedyColumns.
+function assignMacroColumns(peers, calendarOrder) {
   const byCal = new Map();
-  for (const ev of events) {
+  for (const ev of peers) {
     const key = calendarKey(ev);
     if (!byCal.has(key)) byCal.set(key, []);
     byCal.get(key).push(ev);
@@ -457,12 +460,12 @@ function layoutTimedEvents(events, calendarOrder) {
 
   // Connect events that overlap in time AND belong to different calendars
   // (same-calendar overlap is already handled by greedyColumns above).
-  const n   = events.length;
+  const n   = peers.length;
   const adj = Array.from({ length: n }, () => []);
   for (let i = 0; i < n; i++) {
-    const a = events[i];
+    const a = peers[i];
     for (let j = i + 1; j < n; j++) {
-      const b = events[j];
+      const b = peers[j];
       if (calendarKey(a) !== calendarKey(b) &&
           a.start.getTime() < b.end.getTime() && a.end.getTime() > b.start.getTime()) {
         adj[i].push(j);
@@ -484,7 +487,7 @@ function layoutTimedEvents(events, calendarOrder) {
         if (!seen[nb]) { seen[nb] = true; stack.push(nb); }
       }
     }
-    const compKeys = [...new Set(comp.map(idx => calendarKey(events[idx])))].sort((a, b) => {
+    const compKeys = [...new Set(comp.map(idx => calendarKey(peers[idx])))].sort((a, b) => {
       const ia = calendarOrder.has(a) ? calendarOrder.get(a) : Infinity;
       const ib = calendarOrder.has(b) ? calendarOrder.get(b) : Infinity;
       return ia !== ib ? ia - ib : a.localeCompare(b);
@@ -492,11 +495,77 @@ function layoutTimedEvents(events, calendarOrder) {
     const keyToCol = new Map(compKeys.map((k, c) => [k, c]));
     const total    = compKeys.length;
     for (const idx of comp) {
-      const ev = events[idx];
+      const ev = peers[idx];
       ev._col   = keyToCol.get(calendarKey(ev));
       ev._total = total;
     }
   }
+}
+
+// Container must be at least this many times longer to "span across" a
+// shorter event — plain full containment alone is too eager: two
+// comparable-length events often share a start or end time by coincidence,
+// and those should still read as simultaneous siblings (side by side), not
+// one "spanning" the other.
+const SPAN_RATIO = 2;
+
+// The tightest OTHER event in dayEvents that genuinely spans across ev, or
+// null. This is what distinguishes an all-day-ish "Block" (renders as a
+// full-width background, with events inside it layered on top) from a
+// same-length overlapping meeting (renders side by side via
+// assignMacroColumns instead).
+function findContainer(ev, dayEvents) {
+  const evDur = ev.end.getTime() - ev.start.getTime();
+  let best = null;
+  for (const o of dayEvents) {
+    if (o === ev) continue;
+    if (o.start.getTime() > ev.start.getTime() || o.end.getTime() < ev.end.getTime()) continue;
+    if (o.start.getTime() === ev.start.getTime() && o.end.getTime() === ev.end.getTime()) continue;
+    if (o.end.getTime() - o.start.getTime() < evDur * SPAN_RATIO) continue;
+    if (!best || (o.end.getTime() - o.start.getTime()) < (best.end.getTime() - best.start.getTime())) best = o;
+  }
+  return best;
+}
+
+// Lays out a day's timed events in stable per-calendar columns (ordered by
+// calendarOrder) instead of raw greedy packing by start time — so a given
+// person/calendar always lands in the same slot relative to whoever it's
+// actually double-booked against, instead of shuffling around day to day.
+//
+// Two different relationships are treated differently, per how people
+// actually read a calendar:
+//   • Events genuinely at the same time (comparable, overlapping durations)
+//     render side by side, split via assignMacroColumns.
+//   • An event that spans across (fully contains) a shorter one — e.g. an
+//     all-day "Block" with a specific meeting inside it — doesn't fight the
+//     shorter event for width. The long event renders as a full-width
+//     background layer; events it contains render on top of it, sized and
+//     split among only their own siblings (other events with the same
+//     direct container). This nests arbitrarily deep via ev._container.
+function layoutTimedEvents(events, calendarOrder) {
+  for (const ev of events) {
+    ev._container = findContainer(ev, events);
+  }
+
+  const childrenOf = new Map();
+  for (const ev of events) {
+    if (ev._container) {
+      const key = ev._container;
+      if (!childrenOf.has(key)) childrenOf.set(key, []);
+      childrenOf.get(key).push(ev);
+    }
+  }
+
+  const layoutTier = (peers) => {
+    assignMacroColumns(peers, calendarOrder);
+    for (const peer of peers) {
+      const kids = childrenOf.get(peer);
+      if (kids) layoutTier(kids);
+    }
+  };
+
+  const roots = events.filter(ev => !ev._container);
+  layoutTier(roots);
   return events;
 }
 
@@ -666,6 +735,36 @@ function CalendarGrid({ view, baseDate }) {
               {days.map((day, i) => {
                 const isToday  = day.getTime() === today.getTime();
                 const timedEvs = layoutTimedEvents(eventsForDay(day).filter(ev => !ev.allDay), calendarOrder);
+                // Draw background (root) events before whatever spans across them, so
+                // contained events always paint on top of their container.
+                const depthOf = (ev) => {
+                  let n = 0, cur = ev._container;
+                  while (cur) { n++; cur = cur._container; }
+                  return n;
+                };
+                const drawOrder = [...timedEvs].sort((a, b) => depthOf(a) - depthOf(b));
+                // Percentage-of-day-column (x, width) for ev, inset within its
+                // container's own bounds (recursively) if it spans across another
+                // event, or within the day's macro/sub-column slot otherwise.
+                const boundsMemo = new Map();
+                const calcBounds = (ev) => {
+                  if (boundsMemo.has(ev)) return boundsMemo.get(ev);
+                  let slotX, slotW;
+                  if (!ev._container) {
+                    slotX = 0;
+                    slotW = 100;
+                  } else {
+                    const [px, pw] = calcBounds(ev._container);
+                    const inset = pw * 0.07;
+                    slotX = px + inset;
+                    slotW = Math.max(pw * 0.3, pw - 2 * inset);
+                  }
+                  const macroW = slotW / ev._total;
+                  const subW   = macroW / ev._subTotal;
+                  const result = [slotX + ev._col * macroW + ev._subCol * subW, subW];
+                  boundsMemo.set(ev, result);
+                  return result;
+                };
                 return (
                   <Box key={i} sx={{ flex: 1, position: "relative", zIndex: 1 }}>
                     {/* Current time line — scoped to today's column only */}
@@ -683,20 +782,19 @@ function CalendarGrid({ view, baseDate }) {
                         }} />
                       </Box>
                     )}
-                    {timedEvs.map(ev => {
+                    {drawOrder.map(ev => {
                       const topPct     = toGridPct(ev.start);
                       const clampS     = Math.max(ev.start.getHours() + ev.start.getMinutes() / 60, GRID_START);
                       const clampE     = Math.min(ev.end.getHours()   + ev.end.getMinutes()   / 60, GRID_END);
                       const durationHr = clampE - clampS;
                       const hPct       = Math.max(100 / GRID_HOURS * 0.33, durationHr / GRID_HOURS * 100);
-                      const macroWPct  = 100 / ev._total;
-                      const leftPct    = ev._col * macroWPct + (ev._subCol / ev._subTotal) * macroWPct;
-                      const widthPct   = macroWPct / ev._subTotal;
+                      const [leftPct, widthPct] = calcBounds(ev);
+                      const nested      = !!ev._container;
                       // Duration tiers (not flex-shrink) decide what fits — a box this short
                       // is a fixed, small number of pixels regardless of screen size, so we
                       // pick a fixed number of text lines instead of letting content overflow
                       // and get squeezed/overlapped by the browser.
-                      const isCramped  = ev._subTotal > 1 || durationHr < 0.75;
+                      const isCramped  = ev._subTotal > 1 || nested || durationHr < 0.75;
                       const titleLines = durationHr < 0.5 ? 1 : 2;
                       const showCalName = !isCramped && durationHr >= 1.25;
                       const textColor   = getContrastText(ev.color);
@@ -710,7 +808,15 @@ function CalendarGrid({ view, baseDate }) {
                             width:  `calc(${widthPct.toFixed(2)}% - 2px)`,
                             bgcolor: ev.color, color: textColor,
                             borderRadius: 0.75, px: 0.5, py: 0.25,
-                            overflow: "hidden", cursor: "default", zIndex: 2,
+                            overflow: "hidden", cursor: "default",
+                            zIndex: 2 + (nested ? 1 : 0),
+                            // A spanning event (e.g. an all-day "Block") renders as a plain
+                            // background; anything it contains renders on top of it, so it
+                            // needs a visible border/shadow to read as "in front of" it.
+                            ...(nested ? {
+                              border: "2px solid #fff",
+                              boxShadow: "1px 2px 5px rgba(0,0,0,0.35)",
+                            } : {}),
                           }}>
                             <Typography sx={{
                               fontSize: "0.58rem", fontWeight: 700, lineHeight: 1.2, opacity: 0.85,

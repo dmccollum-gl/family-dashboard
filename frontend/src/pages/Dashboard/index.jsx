@@ -44,6 +44,25 @@ function formatTime12(date) {
   return `${h}:${String(m).padStart(2, "0")}${ampm}`;
 }
 
+// Identifies "the same calendar" for column grouping — a person can have several
+// calendars, so name alone isn't enough.
+function calendarKey(ev) {
+  return `${ev.userName || ""}␟${ev.calendarName || ev.title || ""}`;
+}
+
+// Perceived luminance (per ITU-R BT.601) decides whether white or dark text reads
+// better on a given event color — light pastel calendar colors need dark text.
+function getContrastText(hex) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return "#fff";
+  const full = m[1].length === 3 ? m[1].split("").map(c => c + c).join("") : m[1];
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.62 ? "rgba(0,0,0,0.87)" : "#fff";
+}
+
 // ── time-grid helpers ──────────────────────────────────────────────────────────
 
 const TIME_COL_W  = 36;
@@ -380,36 +399,71 @@ function NewsWidget() {
 
 // ── Overlap layout ────────────────────────────────────────────────────────────
 
-function layoutTimedEvents(events) {
+// Greedy interval-graph coloring, scoped to a single list of events (used both
+// for the top-level per-calendar grouping and for same-calendar double-bookings).
+function greedyColumns(events, colField, totalField) {
   const sorted = [...events].sort((a, b) => a.start - b.start);
   const colEnds = [];
   for (const ev of sorted) {
     let placed = false;
     for (let i = 0; i < colEnds.length; i++) {
       if (colEnds[i] <= ev.start.getTime()) {
-        ev._col = i;
+        ev[colField] = i;
         colEnds[i] = ev.end.getTime();
         placed = true;
         break;
       }
     }
     if (!placed) {
-      ev._col = colEnds.length;
+      ev[colField] = colEnds.length;
       colEnds.push(ev.end.getTime());
     }
   }
   for (const ev of sorted) {
-    let maxCol = ev._col;
+    let maxCol = ev[colField];
     for (const other of sorted) {
       if (other !== ev &&
           ev.start.getTime() < other.end.getTime() &&
           ev.end.getTime() > other.start.getTime()) {
-        maxCol = Math.max(maxCol, other._col);
+        maxCol = Math.max(maxCol, other[colField]);
       }
     }
-    ev._total = maxCol + 1;
+    ev[totalField] = maxCol + 1;
   }
   return sorted;
+}
+
+// Lays out a day's timed events in stable per-calendar columns (ordered by
+// calendarOrder) instead of raw greedy packing by start time — so a given
+// person/calendar always lands in the same slot instead of shuffling around
+// day to day, and column count is "how many calendars are active today" rather
+// than "how many events happen to overlap", which keeps columns readably wide.
+// Same-calendar double-bookings still sub-divide within that calendar's slot.
+function layoutTimedEvents(events, calendarOrder) {
+  const groups = new Map();
+  for (const ev of events) {
+    const key = calendarKey(ev);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ev);
+  }
+
+  const keys = [...groups.keys()].sort((a, b) => {
+    const ia = calendarOrder.has(a) ? calendarOrder.get(a) : Infinity;
+    const ib = calendarOrder.has(b) ? calendarOrder.get(b) : Infinity;
+    return ia !== ib ? ia - ib : a.localeCompare(b);
+  });
+
+  const total  = keys.length || 1;
+  const result = [];
+  keys.forEach((key, groupIdx) => {
+    const groupEvents = greedyColumns(groups.get(key), "_subCol", "_subTotal");
+    for (const ev of groupEvents) {
+      ev._col   = groupIdx;
+      ev._total = total;
+      result.push(ev);
+    }
+  });
+  return result;
 }
 
 // ── Calendar grid ──────────────────────────────────────────────────────────────
@@ -477,6 +531,17 @@ function CalendarGrid({ view, baseDate }) {
       });
   };
 
+  // Stable left-to-right column order for the whole view (not just one day) —
+  // this is what keeps each person/calendar in the same lane across the week
+  // instead of columns shuffling based on which events happen to start first.
+  const calendarOrder = useMemo(() => {
+    const keys = new Set();
+    for (const ev of events) if (!ev.allDay) keys.add(calendarKey(ev));
+    const map = new Map();
+    [...keys].sort((a, b) => a.localeCompare(b)).forEach((k, i) => map.set(k, i));
+    return map;
+  }, [events]);
+
   return (
     <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, gap: 0.75 }}>
 
@@ -517,7 +582,7 @@ function CalendarGrid({ view, baseDate }) {
                   </Typography>
                   {eventsForDay(day).filter(ev => ev.allDay).map(ev => (
                     <Tooltip key={ev.id} title={`${ev.calendarName} · ${ev.userName}`}>
-                      <Box sx={{ bgcolor: ev.color, color: "#fff", borderRadius: 0.5, px: 0.5, mt: 0.25, overflow: "hidden" }}>
+                      <Box sx={{ bgcolor: ev.color, color: getContrastText(ev.color), borderRadius: 0.5, px: 0.5, mt: 0.25, overflow: "hidden" }}>
                         <Typography sx={{ fontSize: "0.6rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           {ev.title}
                         </Typography>
@@ -566,7 +631,7 @@ function CalendarGrid({ view, baseDate }) {
               {/* Day columns */}
               {days.map((day, i) => {
                 const isToday  = day.getTime() === today.getTime();
-                const timedEvs = layoutTimedEvents(eventsForDay(day).filter(ev => !ev.allDay));
+                const timedEvs = layoutTimedEvents(eventsForDay(day).filter(ev => !ev.allDay), calendarOrder);
                 return (
                   <Box key={i} sx={{ flex: 1, position: "relative", zIndex: 1 }}>
                     {/* Current time line — scoped to today's column only */}
@@ -585,37 +650,53 @@ function CalendarGrid({ view, baseDate }) {
                       </Box>
                     )}
                     {timedEvs.map(ev => {
-                      const topPct   = toGridPct(ev.start);
-                      const clampS   = Math.max(ev.start.getHours() + ev.start.getMinutes() / 60, GRID_START);
-                      const clampE   = Math.min(ev.end.getHours()   + ev.end.getMinutes()   / 60, GRID_END);
-                      const hPct     = Math.max(100 / GRID_HOURS * 0.33, (clampE - clampS) / GRID_HOURS * 100);
-                      const leftPct  = (ev._col  / ev._total) * 100;
-                      const widthPct = (1        / ev._total) * 100;
+                      const topPct     = toGridPct(ev.start);
+                      const clampS     = Math.max(ev.start.getHours() + ev.start.getMinutes() / 60, GRID_START);
+                      const clampE     = Math.min(ev.end.getHours()   + ev.end.getMinutes()   / 60, GRID_END);
+                      const durationHr = clampE - clampS;
+                      const hPct       = Math.max(100 / GRID_HOURS * 0.33, durationHr / GRID_HOURS * 100);
+                      const macroWPct  = 100 / ev._total;
+                      const leftPct    = ev._col * macroWPct + (ev._subCol / ev._subTotal) * macroWPct;
+                      const widthPct   = macroWPct / ev._subTotal;
+                      // Duration tiers (not flex-shrink) decide what fits — a box this short
+                      // is a fixed, small number of pixels regardless of screen size, so we
+                      // pick a fixed number of text lines instead of letting content overflow
+                      // and get squeezed/overlapped by the browser.
+                      const isCramped  = ev._subTotal > 1 || durationHr < 0.75;
+                      const titleLines = durationHr < 0.5 ? 1 : 2;
+                      const showCalName = !isCramped && durationHr >= 1.25;
+                      const textColor   = getContrastText(ev.color);
                       return (
                         <Tooltip key={ev.id} title={`${ev.calendarName} · ${ev.userName} · ${formatTime12(ev.start)}–${formatTime12(ev.end)}`} placement="right">
                           <Box sx={{
                             position: "absolute",
                             top:    `${topPct}%`,
-                            height: `max(20px, ${hPct.toFixed(2)}%)`,
-                            left:   `calc(${leftPct.toFixed(1)}% + 1px)`,
-                            width:  `calc(${widthPct.toFixed(1)}% - 2px)`,
-                            bgcolor: ev.color, color: "#fff",
+                            height: `max(22px, ${hPct.toFixed(2)}%)`,
+                            left:   `calc(${leftPct.toFixed(2)}% + 1px)`,
+                            width:  `calc(${widthPct.toFixed(2)}% - 2px)`,
+                            bgcolor: ev.color, color: textColor,
                             borderRadius: 0.75, px: 0.5, py: 0.25,
                             overflow: "hidden", cursor: "default", zIndex: 2,
                           }}>
-                            <Typography sx={{ fontSize: "0.6rem", fontWeight: 700, lineHeight: 1.2, opacity: 0.9 }}>
+                            <Typography sx={{
+                              fontSize: "0.58rem", fontWeight: 700, lineHeight: 1.2, opacity: 0.85,
+                              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                            }}>
                               {formatTime12(ev.start)}
                             </Typography>
                             <Typography sx={{
                               fontSize: "0.65rem", fontWeight: 600, lineHeight: 1.2,
                               overflow: "hidden", display: "-webkit-box",
-                              WebkitLineClamp: 3, WebkitBoxOrient: "vertical",
+                              WebkitLineClamp: titleLines, WebkitBoxOrient: "vertical",
+                              wordBreak: "break-word",
                             }}>
                               {ev.title}
                             </Typography>
-                            <Typography sx={{ fontSize: "0.5rem", opacity: 0.8, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
-                              {ev.calendarName}
-                            </Typography>
+                            {showCalName && (
+                              <Typography sx={{ fontSize: "0.5rem", opacity: 0.8, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+                                {ev.calendarName}
+                              </Typography>
+                            )}
                           </Box>
                         </Tooltip>
                       );
@@ -668,7 +749,7 @@ function CalendarGrid({ view, baseDate }) {
                   ) : dayEvents.map(ev => (
                     <Tooltip key={ev.id} title={`${ev.calendarName} · ${ev.userName}${ev.allDay ? "" : ` · ${formatTime12(ev.start)}`}`} placement="top">
                       <Box sx={{
-                        bgcolor: ev.color, color: "#fff",
+                        bgcolor: ev.color, color: getContrastText(ev.color),
                         borderRadius: 0.75, px: 0.75, py: 0.25,
                         cursor: "default", overflow: "hidden",
                       }}>

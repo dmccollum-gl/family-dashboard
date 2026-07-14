@@ -441,6 +441,18 @@ def _blit(surf: pygame.Surface, text: str, size: int, color: tuple,
     return r
 
 
+def _format_time_range(start: datetime, end: datetime) -> str:
+    """Compact start-end range, e.g. '9:45-11:30am' or '11:45am-12:15pm' —
+    only shown once when both ends share the same am/pm."""
+    s_ap = start.strftime("%p").lower()
+    e_ap = end.strftime("%p").lower()
+    s = start.strftime("%-I:%M")
+    e = end.strftime("%-I:%M")
+    if s_ap == e_ap:
+        return f"{s}–{e}{e_ap}"
+    return f"{s}{s_ap}–{e}{e_ap}"
+
+
 def _trunc(text: str, fnt: pygame.font.Font, max_w: int) -> str:
     if fnt.size(text)[0] <= max_w:
         return text
@@ -1323,32 +1335,33 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             sheen = pygame.Surface((ev_w - _s(2), sh_h), pygame.SRCALPHA)
             sheen.fill((255, 255, 255, 22))
             surf.blit(sheen, (int(ev_x) + _s(1), int(ev_y) + _s(1)))
-        # Wrap the title to fill the block (multi-line, auto-sized) instead of
-        # clipping it to a single line. On tall blocks, reserve room for the time.
+        # Time range + title are one label block, time first — never a separate
+        # element anchored to the bottom of the box, so they always read
+        # together regardless of how tall the event is.
         # A spanning event with children only labels its own reserved spine —
         # children are already confined (via _calc_bounds) to the width to the
         # right of it, so this label can never end up covered by one of them.
-        pad_x     = _s(6)
-        label_w   = ev_w * _SPINE_FRACTION if id(ev) in has_children_ids else ev_w
-        lbl_x     = ev_x + pad_x
-        lbl_y     = ev_y + _s(2)
-        lbl_w     = label_w - pad_x - _s(3)
-        lbl_h     = ev_h - _s(4)
-        show_time = ev_h >= _s(44)
-        if show_time:
-            lbl_h -= _s(15)
+        pad_x   = _s(6)
+        label_w = ev_w * _SPINE_FRACTION if id(ev) in has_children_ids else ev_w
+        lbl_x   = ev_x + pad_x
+        lbl_y   = ev_y + _s(2)
+        lbl_w   = label_w - pad_x - _s(3)
+        lbl_h   = ev_h - _s(4)
         # Clip to the label area so a run of narrow same-calendar
         # double-bookings — or a container's children — can never bleed
         # text into a neighboring slot.
         prev_clip = surf.get_clip()
         surf.set_clip(pygame.Rect(int(ev_x), int(ev_y), int(label_w), int(ev_h)))
+        time_fnt = _font(11)
+        time_h   = time_fnt.get_linesize()
+        if lbl_h >= time_h + _s(10):
+            time_str = _trunc(_format_time_range(ev["start"], ev["end"]), time_fnt, int(lbl_w))
+            t1 = time_fnt.render(time_str, True, ev_txt_c)
+            surf.blit(t1, (int(lbl_x), int(lbl_y)))
+            lbl_y += time_h
+            lbl_h -= time_h
         _draw_event_label(surf, ev["title"], lbl_x, lbl_y, lbl_w, lbl_h, ev_txt_c,
                           base_size=16, min_size=11, valign="top")
-        if show_time:
-            time_fnt = _font(13)
-            time_str = _trunc(ev["start"].strftime("%-I:%M %p"), time_fnt, int(lbl_w))
-            t2 = time_fnt.render(time_str, True, ev_txt_c)
-            surf.blit(t2, (int(ev_x + pad_x), int(ev_y + ev_h - _s(15))))
         surf.set_clip(prev_clip)
 
     # now-line is intentionally omitted here — drawn as an overlay in main()

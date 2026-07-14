@@ -44,6 +44,16 @@ function formatTime12(date) {
   return `${h}:${String(m).padStart(2, "0")}${ampm}`;
 }
 
+// Compact start-end range, e.g. "9:45-11:30am" or "11:45am-12:15pm" — only
+// shown once when both ends share the same am/pm.
+function formatTimeRange12(start, end) {
+  const sAmPm = start.getHours() >= 12 ? "pm" : "am";
+  const eAmPm = end.getHours()   >= 12 ? "pm" : "am";
+  const s = formatTime12(start).replace(/(am|pm)$/, "");
+  const e = formatTime12(end);
+  return sAmPm === eAmPm ? `${s}–${e}` : `${s}${sAmPm}–${e}`;
+}
+
 // Identifies "the same calendar" for column grouping — a person can have several
 // calendars, so name alone isn't enough.
 function calendarKey(ev) {
@@ -844,7 +854,10 @@ function CalendarGrid({ view, baseDate }) {
                               boxShadow: "1px 2px 5px rgba(0,0,0,0.35)",
                             } : {}),
                           }}>
-                            {/* A container's own label is confined to a reserved left "spine"
+                            {/* Time range + title are one label block, time first — never a
+                                separate element pinned to the bottom of the box, so they always
+                                read together no matter how tall the event is.
+                                A container's own label is confined to a reserved left "spine"
                                 (matching the width calcBounds carves out for it above) so it can
                                 never end up covered by a child rendered on top of it. */}
                             <Box sx={hasKids ? { width: `${SPINE_FRACTION * 100}%`, overflow: "hidden" } : undefined}>
@@ -852,7 +865,7 @@ function CalendarGrid({ view, baseDate }) {
                                 fontSize: "0.58rem", fontWeight: 700, lineHeight: 1.2, opacity: 0.85,
                                 whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                               }}>
-                                {formatTime12(ev.start)}
+                                {formatTimeRange12(ev.start, ev.end)}
                               </Typography>
                               <Typography sx={{
                                 fontSize: "0.65rem", fontWeight: 600, lineHeight: 1.2,

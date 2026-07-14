@@ -624,28 +624,69 @@ def _parse_dt(s: str) -> Optional[datetime]:
     return None
 
 
-def _layout_timed(evs: list) -> list:
+def _calendar_key(ev: dict) -> str:
+    """Identifies 'the same calendar' for column grouping — a person can have
+    several calendars, so name alone isn't enough."""
+    return f"{ev.get('userName', '')}\x1f{ev.get('calendarName') or ev.get('title', '')}"
+
+
+def _greedy_columns(evs: list) -> None:
+    """Greedy interval-graph coloring — assigns _subcol/_subtotal in place."""
     evs = sorted(evs, key=lambda e: e["start"])
     ends: list[float] = []
     for ev in evs:
         placed = False
         for i, ce in enumerate(ends):
             if ce <= ev["start"].timestamp():
-                ev["_col"] = i
+                ev["_subcol"] = i
                 ends[i] = ev["end"].timestamp()
                 placed = True
                 break
         if not placed:
-            ev["_col"] = len(ends)
+            ev["_subcol"] = len(ends)
             ends.append(ev["end"].timestamp())
     for ev in evs:
-        mx = ev["_col"]
+        mx = ev["_subcol"]
         for ov in evs:
-            if ov is not ev:
-                if (ev["start"].timestamp() < ov["end"].timestamp() and
-                        ev["end"].timestamp() > ov["start"].timestamp()):
-                    mx = max(mx, ov["_col"])
-        ev["_total"] = mx + 1
+            if ov is not ev and (ev["start"].timestamp() < ov["end"].timestamp() and
+                                  ev["end"].timestamp() > ov["start"].timestamp()):
+                mx = max(mx, ov["_subcol"])
+        ev["_subtotal"] = mx + 1
+
+
+def _layout_timed(evs: list) -> list:
+    """Lay out timed events in stable per-calendar columns instead of raw greedy
+    packing by start time — so a given person/calendar always lands in the same
+    lane instead of shuffling day to day, and column count on a given day is
+    "how many calendars are active today" rather than "how many events happen
+    to overlap", which keeps columns readably wide. Same-calendar double-
+    bookings still sub-divide within that calendar's own column.
+    """
+    if not evs:
+        return evs
+
+    # Stable order across the whole visible range (not just one day).
+    order = {k: i for i, k in enumerate(sorted({_calendar_key(e) for e in evs}))}
+
+    by_day: dict = defaultdict(list)
+    for ev in evs:
+        by_day[ev["start"].date()].append(ev)
+
+    for day_evs in by_day.values():
+        groups: dict = defaultdict(list)
+        for ev in day_evs:
+            groups[_calendar_key(ev)].append(ev)
+
+        day_keys = sorted(groups.keys(), key=lambda k: order.get(k, len(order)))
+        total    = len(day_keys) or 1
+
+        for col_idx, key in enumerate(day_keys):
+            grp = groups[key]
+            _greedy_columns(grp)
+            for ev in grp:
+                ev["_col"]   = col_idx
+                ev["_total"] = total
+
     return evs
 
 
@@ -680,12 +721,16 @@ def _parse_events(raw: list, start: date, end: date) -> tuple[list, list]:
         if not isinstance(ev_end, datetime):
             ev_end   = datetime.combine(ev_end,   datetime.min.time()).astimezone()
         rec = {
-            "title":  ev.get("title") or ev.get("summary") or "Untitled",
-            "start":  ev_start,
-            "end":    ev_end,
-            "color":  ev.get("color") or "#1976d2",
-            "_col":   0,
-            "_total": 1,
+            "title":        ev.get("title") or ev.get("summary") or "Untitled",
+            "start":        ev_start,
+            "end":          ev_end,
+            "color":        ev.get("color") or "#1976d2",
+            "userName":     ev.get("userName") or "",
+            "calendarName": ev.get("calendarName") or "",
+            "_col":     0,
+            "_total":   1,
+            "_subcol":  0,
+            "_subtotal": 1,
         }
         (all_day if is_allday else timed).append(rec)
 
@@ -1072,13 +1117,17 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             continue
         ev_y = grid_top + (s_min - GRID_START * 60) / 60 * row_h
         ev_h = max(16, (e_min - s_min) / 60 * row_h - 2)
-        col    = ev["_col"]
-        tot    = ev["_total"]
-        bx     = x + LABEL_W + d * col_w
-        # True equal-width side-by-side: each slot is (col_w-margin)/N wide
-        slot_w = (col_w - _s(4)) // max(tot, 1)
-        ev_w   = slot_w - _s(2)
-        ev_x   = bx + _s(2) + col * slot_w
+        col     = ev["_col"]
+        tot     = ev["_total"]
+        subcol  = ev.get("_subcol", 0)
+        subtot  = ev.get("_subtotal", 1)
+        bx      = x + LABEL_W + d * col_w
+        # Each calendar gets an equal-width macro slot; same-calendar
+        # double-bookings sub-divide within their own slot only.
+        macro_w = (col_w - _s(4)) / max(tot, 1)
+        slot_w  = macro_w / max(subtot, 1)
+        ev_w    = max(_s(6), int(slot_w) - _s(2))
+        ev_x    = int(bx + _s(2) + col * macro_w + subcol * slot_w)
         color_list = ev.get("color_list")
         if color_list and len(color_list) > 1:
             clrs     = [_hex_rgb(c) for c in color_list]
@@ -1109,11 +1158,18 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         show_time = ev_h >= _s(44)
         if show_time:
             lbl_h -= _s(15)
+        # Clip to the event's own box so a run of narrow same-calendar
+        # double-bookings can never bleed text into a neighboring slot.
+        prev_clip = surf.get_clip()
+        surf.set_clip(pygame.Rect(int(ev_x), int(ev_y), int(ev_w), int(ev_h)))
         _draw_event_label(surf, ev["title"], lbl_x, lbl_y, lbl_w, lbl_h, ev_txt_c,
                           base_size=16, min_size=11, valign="top")
         if show_time:
-            t2 = _font(13).render(ev["start"].strftime("%-I:%M %p"), True, ev_txt_c)
+            time_fnt = _font(13)
+            time_str = _trunc(ev["start"].strftime("%-I:%M %p"), time_fnt, int(lbl_w))
+            t2 = time_fnt.render(time_str, True, ev_txt_c)
             surf.blit(t2, (int(ev_x + pad_x), int(ev_y + ev_h - _s(15))))
+        surf.set_clip(prev_clip)
 
     # now-line is intentionally omitted here — drawn as an overlay in main()
     return allday_h

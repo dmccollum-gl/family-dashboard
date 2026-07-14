@@ -767,6 +767,17 @@ def _layout_timed(evs: list) -> list:
         for ev in day_evs:
             ev["_container"] = _find_container(ev, day_evs)
 
+        # Flatten to at most one level of nesting: a "child" always attaches
+        # directly to its outermost background ancestor, never to another
+        # child. Without this, a chain of comparably-sized overlapping events
+        # (A spans B spans C spans D...) nests recursively, insetting further
+        # at each level until events shrink into unreadable slivers.
+        for ev in day_evs:
+            root = ev["_container"]
+            while root is not None and root.get("_container") is not None:
+                root = root["_container"]
+            ev["_container"] = root
+
         children_of: dict = defaultdict(list)
         for ev in day_evs:
             if ev["_container"] is not None:

@@ -547,6 +547,17 @@ function layoutTimedEvents(events, calendarOrder) {
     ev._container = findContainer(ev, events);
   }
 
+  // Flatten to at most one level of nesting: a "child" always attaches
+  // directly to its outermost background ancestor, never to another child.
+  // Without this, a chain of comparably-sized overlapping events (A spans B
+  // spans C spans D...) nests recursively, insetting further at each level
+  // until events shrink into unreadable slivers.
+  for (const ev of events) {
+    let root = ev._container;
+    while (root && root._container) root = root._container;
+    ev._container = root;
+  }
+
   const childrenOf = new Map();
   for (const ev of events) {
     if (ev._container) {

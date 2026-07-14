@@ -654,19 +654,104 @@ def _greedy_columns(evs: list) -> None:
         ev["_subtotal"] = mx + 1
 
 
+def _assign_macro_columns(peers: list, order: dict) -> None:
+    """Assign _col/_total/_subcol/_subtotal among a list of same-tier "peer"
+    events (either all the day's root events, or all the children sharing one
+    direct container). Must be called per-tier, after containment is resolved
+    — a same-calendar double-booking that turns out to be contained inside
+    another peer's tier needs its sub-columns computed among only that tier's
+    siblings, not the calendar's events for the whole day.
+
+    Width is NOT "how many calendars are in this peer group" — a calendar
+    whose events never actually overlap another peer gets full width, same as
+    plain side-by-side would if there were no conflict. Only calendars with a
+    genuine time conflict share a narrower slot: events are grouped into
+    connected components by real cross-calendar time overlap, and each
+    component gets its own compact, alphabetically-ordered set of columns.
+    Same-calendar double-bookings within a tier still sub-divide within their
+    own column via _greedy_columns.
+    """
+    cal_groups: dict = defaultdict(list)
+    for ev in peers:
+        cal_groups[_calendar_key(ev)].append(ev)
+    for grp in cal_groups.values():
+        _greedy_columns(grp)
+
+    n   = len(peers)
+    adj = [[] for _ in range(n)]
+    for i in range(n):
+        a = peers[i]
+        for j in range(i + 1, n):
+            b = peers[j]
+            if (_calendar_key(a) != _calendar_key(b) and
+                    a["start"] < b["end"] and a["end"] > b["start"]):
+                adj[i].append(j)
+                adj[j].append(i)
+
+    seen = [False] * n
+    for i in range(n):
+        if seen[i]:
+            continue
+        stack, comp = [i], []
+        seen[i] = True
+        while stack:
+            cur = stack.pop()
+            comp.append(cur)
+            for nb in adj[cur]:
+                if not seen[nb]:
+                    seen[nb] = True
+                    stack.append(nb)
+        comp_keys = sorted({_calendar_key(peers[idx]) for idx in comp},
+                            key=lambda k: order.get(k, 0))
+        key_to_col = {k: c for c, k in enumerate(comp_keys)}
+        total = len(comp_keys)
+        for idx in comp:
+            ev = peers[idx]
+            ev["_col"]   = key_to_col[_calendar_key(ev)]
+            ev["_total"] = total
+
+
+_SPAN_RATIO = 2.0  # container must be at least this many times longer to "span across"
+
+
+def _find_container(ev: dict, day_evs: list):
+    """The tightest OTHER event in day_evs that genuinely spans across ev, or
+    None. Full geometric containment alone isn't enough — two comparable-length
+    events often share a start or end time by coincidence, and those should
+    still read as simultaneous siblings (side by side), not one "spanning"
+    the other. Only count it when the container is markedly longer
+    (_SPAN_RATIO), which is what actually distinguishes an all-day-ish
+    "Block" from a same-length overlapping meeting."""
+    ev_dur = ev["end"] - ev["start"]
+    candidates = [
+        o for o in day_evs
+        if o is not ev and o["start"] <= ev["start"] and o["end"] >= ev["end"]
+        and (o["start"], o["end"]) != (ev["start"], ev["end"])
+        and (o["end"] - o["start"]) >= ev_dur * _SPAN_RATIO
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda o: o["end"] - o["start"])
+
+
 def _layout_timed(evs: list) -> list:
     """Lay out timed events in stable per-calendar columns instead of raw greedy
     packing by start time — so a given person/calendar always lands in the same
     lane relative to whoever it's actually double-booked against, instead of
     shuffling day to day.
 
-    Width is NOT "how many calendars have any event that day" — a calendar
-    whose events never actually overlap anyone else that day gets full width,
-    same as before. Only calendars with a genuine time conflict share a
-    narrower slot: events are grouped into connected components by real
-    cross-calendar time overlap, and each component gets its own compact,
-    alphabetically-ordered set of columns. Same-calendar double-bookings still
-    sub-divide within that calendar's own column via _greedy_columns.
+    Two different relationships are treated differently, per how people
+    actually read a calendar:
+      • Events genuinely at the same time (comparable, overlapping durations)
+        render side by side, split via _assign_macro_columns.
+      • An event that spans across (fully contains) a shorter one — e.g. an
+        all-day "Block" with a specific meeting inside it — doesn't fight the
+        shorter event for width. The long event renders as a full-width
+        background layer; events it contains render on top of it, sized and
+        split among only their own siblings (other events with the same
+        direct container). This nests arbitrarily deep via ev["_container"].
+    Same-calendar double-bookings still sub-divide within their own column
+    via _greedy_columns, at whichever tier they land in.
     """
     if not evs:
         return evs
@@ -679,46 +764,23 @@ def _layout_timed(evs: list) -> list:
         by_day[ev["start"].date()].append(ev)
 
     for day_evs in by_day.values():
-        cal_groups: dict = defaultdict(list)
         for ev in day_evs:
-            cal_groups[_calendar_key(ev)].append(ev)
-        for grp in cal_groups.values():
-            _greedy_columns(grp)   # same-calendar double-bookings
+            ev["_container"] = _find_container(ev, day_evs)
 
-        # Connect events that overlap in time AND belong to different
-        # calendars (same-calendar overlap is already handled above).
-        n   = len(day_evs)
-        adj = [[] for _ in range(n)]
-        for i in range(n):
-            a = day_evs[i]
-            for j in range(i + 1, n):
-                b = day_evs[j]
-                if (_calendar_key(a) != _calendar_key(b) and
-                        a["start"] < b["end"] and a["end"] > b["start"]):
-                    adj[i].append(j)
-                    adj[j].append(i)
+        children_of: dict = defaultdict(list)
+        for ev in day_evs:
+            if ev["_container"] is not None:
+                children_of[id(ev["_container"])].append(ev)
 
-        seen = [False] * n
-        for i in range(n):
-            if seen[i]:
-                continue
-            stack, comp = [i], []
-            seen[i] = True
-            while stack:
-                cur = stack.pop()
-                comp.append(cur)
-                for nb in adj[cur]:
-                    if not seen[nb]:
-                        seen[nb] = True
-                        stack.append(nb)
-            comp_keys = sorted({_calendar_key(day_evs[idx]) for idx in comp},
-                                key=lambda k: order.get(k, 0))
-            key_to_col = {k: c for c, k in enumerate(comp_keys)}
-            total = len(comp_keys)
-            for idx in comp:
-                ev = day_evs[idx]
-                ev["_col"]   = key_to_col[_calendar_key(ev)]
-                ev["_total"] = total
+        def _layout_tier(peers: list) -> None:
+            _assign_macro_columns(peers, order)
+            for peer in peers:
+                kids = children_of.get(id(peer))
+                if kids:
+                    _layout_tier(kids)
+
+        roots = [e for e in day_evs if e["_container"] is None]
+        _layout_tier(roots)
 
     return evs
 
@@ -760,10 +822,11 @@ def _parse_events(raw: list, start: date, end: date) -> tuple[list, list]:
             "color":        ev.get("color") or "#1976d2",
             "userName":     ev.get("userName") or "",
             "calendarName": ev.get("calendarName") or "",
-            "_col":     0,
-            "_total":   1,
-            "_subcol":  0,
-            "_subtotal": 1,
+            "_col":       0,
+            "_total":     1,
+            "_subcol":    0,
+            "_subtotal":  1,
+            "_container": None,
         }
         (all_day if is_allday else timed).append(rec)
 
@@ -1138,6 +1201,46 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
     def _clamp(v, lo, hi):
         return max(lo, min(hi, v))
 
+    def _depth(ev: dict) -> int:
+        """0 for a background/root event, +1 per level of containment — used
+        purely to pick a draw order so contained events paint on top of
+        whatever spans across them."""
+        n, cur = 0, ev.get("_container")
+        while cur is not None:
+            n += 1
+            cur = cur.get("_container")
+        return n
+
+    bounds_memo: dict = {}
+
+    def _calc_bounds(ev: dict, day_bx: float):
+        """Pixel (x, width) for ev, inset within its container's own bounds
+        (recursively) if it spans across another event, or within the day
+        column's macro/sub-column slot if it's a background/root event."""
+        key = id(ev)
+        if key in bounds_memo:
+            return bounds_memo[key]
+        col    = ev["_col"]
+        tot    = ev["_total"]
+        subcol = ev.get("_subcol", 0)
+        subtot = ev.get("_subtotal", 1)
+        container = ev.get("_container")
+        if container is None:
+            slot_x  = day_bx + _s(2)
+            slot_w  = col_w - _s(4)
+        else:
+            slot_x, slot_w = _calc_bounds(container, day_bx)
+            inset  = min(_s(6), slot_w * 0.15)
+            slot_x = slot_x + inset
+            slot_w = max(_s(10), slot_w - 2 * inset)
+        macro_w = slot_w / max(tot, 1)
+        sub_w   = macro_w / max(subtot, 1)
+        px = slot_x + col * macro_w + subcol * sub_w
+        result = (px, sub_w)
+        bounds_memo[key] = result
+        return result
+
+    visible_evs = []
     for ev in timed_evs:
         d = (ev["start"].date() - start).days
         if not (0 <= d < num_days):
@@ -1148,19 +1251,26 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         e_min = _clamp(e_min, GRID_START * 60, GRID_END * 60)
         if s_min >= e_min:
             continue
+        visible_evs.append((ev, d, s_min, e_min))
+
+    # Draw background (root) events before whatever spans across them, so
+    # contained events always paint on top of their container.
+    visible_evs.sort(key=lambda t: _depth(t[0]))
+
+    for ev, d, s_min, e_min in visible_evs:
         ev_y = grid_top + (s_min - GRID_START * 60) / 60 * row_h
         ev_h = max(16, (e_min - s_min) / 60 * row_h - 2)
-        col     = ev["_col"]
-        tot     = ev["_total"]
-        subcol  = ev.get("_subcol", 0)
-        subtot  = ev.get("_subtotal", 1)
-        bx      = x + LABEL_W + d * col_w
-        # Each calendar gets an equal-width macro slot; same-calendar
-        # double-bookings sub-divide within their own slot only.
-        macro_w = (col_w - _s(4)) / max(tot, 1)
-        slot_w  = macro_w / max(subtot, 1)
-        ev_w    = max(_s(6), int(slot_w) - _s(2))
-        ev_x    = int(bx + _s(2) + col * macro_w + subcol * slot_w)
+        bx   = x + LABEL_W + d * col_w
+        slot_x, slot_w = _calc_bounds(ev, bx)
+        ev_w   = max(_s(6), int(slot_w) - _s(2))
+        ev_x   = int(slot_x)
+        nested = ev.get("_container") is not None
+        if nested and int(ev_h) >= _s(4):
+            # Drop shadow so an event layered on top of a spanning one reads
+            # as "in front of it" rather than just another adjacent block.
+            shadow = pygame.Surface((ev_w, int(ev_h)), pygame.SRCALPHA)
+            pygame.draw.rect(shadow, (0, 0, 0, 70), shadow.get_rect(), border_radius=_s(4))
+            surf.blit(shadow, (ev_x + _s(2), int(ev_y) + _s(2)))
         color_list = ev.get("color_list")
         if color_list and len(color_list) > 1:
             clrs     = [_hex_rgb(c) for c in color_list]
@@ -1176,6 +1286,10 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             stripe_clr = tuple(min(255, c + 65) for c in clr)
             _rrect(surf, stripe_clr, pygame.Rect(int(ev_x), int(ev_y), _s(4), int(ev_h)), _s(4))
             ev_txt_c = _event_text_color(clr)
+        if nested:
+            pygame.draw.rect(surf, (255, 255, 255),
+                              pygame.Rect(int(ev_x), int(ev_y), ev_w, int(ev_h)),
+                              width=2, border_radius=_s(4))
         if int(ev_h) >= _s(8):
             sh_h  = max(_s(3), int(ev_h * 0.38))
             sheen = pygame.Surface((ev_w - _s(2), sh_h), pygame.SRCALPHA)

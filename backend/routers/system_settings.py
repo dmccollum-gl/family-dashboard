@@ -1008,24 +1008,52 @@ def get_update_status(_user=Depends(require_owner)):
 #
 # vcgencmd display_power does NOT work under vc4-kms-v3d (the KMS driver used on
 # all Pi OS Bookworm installs).  The dpms sysfs node is read-only, and SDL's
-# kmsdrm backend holds DRM master so no other process can issue DRM ioctls.
+# kmsdrm backend holds DRM master so no other process can issue DRM ioctls —
+# that means nothing (not even root) can actually power off the HDMI port itself
+# while display.py is running. It's a kernel/DRM constraint, not a missing flag.
 #
-# Solution: write a flag file that display.py polls every frame.  display.py owns
-# the display, so it blanks itself (solid black).  The flag file approach is:
-#   • Instant (display.py runs at 2 FPS, so ≤0.5 s lag)
-#   • Works with any driver — no kernel/firmware cooperation needed
-#   • No root / sudo required
+# Two things happen together instead:
+#   1. A flag file that display.py polls every frame — display.py owns the
+#      display, so it blanks itself (solid black). Instant (≤0.5s @ 2 FPS),
+#      works with any driver, no root required. This is the reliable fallback.
+#   2. A best-effort HDMI-CEC command (via cec-client) telling the connected
+#      monitor/TV to actually power down. CEC is a separate control line from
+#      DRM/KMS, so it isn't blocked by the master-only restriction above — but
+#      it only works if the attached display supports HDMI-CEC (e.g. Samsung
+#      Anynet+). Silently skipped if cec-client isn't installed or no CEC-aware
+#      display answers.
 #
 _DISPLAY_OFF_FLAG = _APP_DIR / ".display_off"
 
 
+def _cec_power(on: bool) -> None:
+    """Best-effort: ask the connected monitor/TV to power on/standby over HDMI-CEC.
+
+    Runs in the background — cec-client can take a few seconds to initialize the
+    adapter, and this must never block or fail the flag-file blanking above.
+    """
+    def _run():
+        try:
+            subprocess.run(
+                ["cec-client", "-s", "-d", "1"],
+                input=("on 0" if on else "standby 0"),
+                text=True, capture_output=True, timeout=10,
+            )
+        except Exception:
+            pass  # no cec-client / no adapter / display doesn't support CEC
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _set_display_power(on: bool) -> bool:
-    """Create or remove the flag file that signals display.py to blank the screen."""
+    """Blank (or restore) the Pi's own render loop via the flag file, and best-
+    effort tell the connected monitor to actually power on/standby via CEC."""
     try:
         if on:
             _DISPLAY_OFF_FLAG.unlink(missing_ok=True)
         else:
             _DISPLAY_OFF_FLAG.touch()
+        _cec_power(on)
         return True
     except Exception:
         return False

@@ -3378,7 +3378,9 @@ function DisplayScheduleSettings() {
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
         <Typography variant="body2" color="text.secondary">
           Automatically blank the Pi display at night and restore it in the morning.
-          Works by signalling display.py directly — no driver or root access needed.
+          Also sends an HDMI-CEC power command to actually turn off the connected
+          monitor/TV, if it supports CEC (e.g. Samsung Anynet+) — otherwise it
+          falls back to a blank screen.
         </Typography>
         <Chip
           size="small"

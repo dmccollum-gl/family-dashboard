@@ -441,6 +441,20 @@ def _blit(surf: pygame.Surface, text: str, size: int, color: tuple,
     return r
 
 
+def _format_time_range(start: datetime, end: datetime) -> str:
+    """Compact start-end range, e.g. '9:45 - 11:30am' or '11:45am - 12:15pm' —
+    only shown once when both ends share the same am/pm. Spaced around the
+    dash (rather than tight) so a narrow event has a clean word-wrap point
+    instead of getting truncated mid-string."""
+    s_ap = start.strftime("%p").lower()
+    e_ap = end.strftime("%p").lower()
+    s = start.strftime("%-I:%M")
+    e = end.strftime("%-I:%M")
+    if s_ap == e_ap:
+        return f"{s} - {e}{e_ap}"
+    return f"{s}{s_ap} - {e}{e_ap}"
+
+
 def _trunc(text: str, fnt: pygame.font.Font, max_w: int) -> str:
     if fnt.size(text)[0] <= max_w:
         return text
@@ -480,6 +494,28 @@ def _ellipsize_last(s: str, fnt: pygame.font.Font, max_w: int) -> str:
     while s and fnt.size(s + "…")[0] > max_w:
         s = s[:-1]
     return (s + "…") if s else "…"
+
+
+def _fit_time_lines(start: datetime, end: datetime, max_w: int, max_lines: int,
+                    base_size: int = 11, min_size: int = 8):
+    """Pick the largest font (down to min_size) that wraps the start-end time
+    range to at most max_lines without needing a mid-word hard break, so the
+    range shrinks before it ever gets truncated. If even min_size can't fit
+    the full range (an extremely narrow box), fall back to the start time
+    alone — still useful — rather than an awkward mid-range truncation."""
+    full = _format_time_range(start, end)
+    for size in range(base_size, min_size - 1, -1):
+        fnt   = _font(size)
+        lines = _wrap_to_width(full, fnt, max_w)
+        if len(lines) <= max_lines:
+            return fnt, lines
+    start_only = start.strftime("%-I:%M%p").lower()
+    for size in range(base_size, min_size - 1, -1):
+        fnt = _font(size)
+        if fnt.size(start_only)[0] <= max_w:
+            return fnt, [start_only]
+    fnt = _font(min_size)
+    return fnt, [_trunc(start_only, fnt, max_w)]
 
 
 def _draw_event_label(surf: pygame.Surface, text: str, x: float, y: float,
@@ -713,6 +749,11 @@ def _assign_macro_columns(peers: list, order: dict) -> None:
 
 _SPAN_RATIO = 2.0  # container must be at least this many times longer to "span across"
 
+# Fraction of a spanning event's own width permanently reserved, left-aligned,
+# for its own time/title — children rendered on top of it are confined to the
+# remaining width, so neither event's title is ever covered by the other.
+_SPINE_FRACTION = 0.34
+
 
 def _find_container(ev: dict, day_evs: list):
     """The tightest OTHER event in day_evs that genuinely spans across ev, or
@@ -766,6 +807,17 @@ def _layout_timed(evs: list) -> list:
     for day_evs in by_day.values():
         for ev in day_evs:
             ev["_container"] = _find_container(ev, day_evs)
+
+        # Flatten to at most one level of nesting: a "child" always attaches
+        # directly to its outermost background ancestor, never to another
+        # child. Without this, a chain of comparably-sized overlapping events
+        # (A spans B spans C spans D...) nests recursively, insetting further
+        # at each level until events shrink into unreadable slivers.
+        for ev in day_evs:
+            root = ev["_container"]
+            while root is not None and root.get("_container") is not None:
+                root = root["_container"]
+            ev["_container"] = root
 
         children_of: dict = defaultdict(list)
         for ev in day_evs:
@@ -1216,7 +1268,12 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
     def _calc_bounds(ev: dict, day_bx: float):
         """Pixel (x, width) for ev, inset within its container's own bounds
         (recursively) if it spans across another event, or within the day
-        column's macro/sub-column slot if it's a background/root event."""
+        column's macro/sub-column slot if it's a background/root event.
+
+        A container's own time/title live in a reserved left "spine" (see
+        _SPINE_FRACTION) that this never encroaches on — children only ever
+        get the width to the right of it, so a child can't be positioned
+        (by its own start time) directly over the container's label."""
         key = id(ev)
         if key in bounds_memo:
             return bounds_memo[key]
@@ -1229,16 +1286,23 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             slot_x  = day_bx + _s(2)
             slot_w  = col_w - _s(4)
         else:
-            slot_x, slot_w = _calc_bounds(container, day_bx)
-            inset  = min(_s(6), slot_w * 0.15)
-            slot_x = slot_x + inset
-            slot_w = max(_s(10), slot_w - 2 * inset)
+            parent_x, parent_w = _calc_bounds(container, day_bx)
+            spine_w = parent_w * _SPINE_FRACTION
+            avail_x = parent_x + spine_w
+            avail_w = max(_s(10), parent_w - spine_w)
+            inset   = min(_s(6), avail_w * 0.15)
+            slot_x  = avail_x + inset
+            slot_w  = max(_s(10), avail_w - 2 * inset)
         macro_w = slot_w / max(tot, 1)
         sub_w   = macro_w / max(subtot, 1)
         px = slot_x + col * macro_w + subcol * sub_w
         result = (px, sub_w)
         bounds_memo[key] = result
         return result
+
+    has_children_ids = {
+        id(ev["_container"]) for ev in timed_evs if ev.get("_container") is not None
+    }
 
     visible_evs = []
     for ev in timed_evs:
@@ -1295,27 +1359,39 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             sheen = pygame.Surface((ev_w - _s(2), sh_h), pygame.SRCALPHA)
             sheen.fill((255, 255, 255, 22))
             surf.blit(sheen, (int(ev_x) + _s(1), int(ev_y) + _s(1)))
-        # Wrap the title to fill the block (multi-line, auto-sized) instead of
-        # clipping it to a single line. On tall blocks, reserve room for the time.
-        pad_x    = _s(6)
-        lbl_x    = ev_x + pad_x
-        lbl_y    = ev_y + _s(2)
-        lbl_w    = ev_w - pad_x - _s(3)
-        lbl_h    = ev_h - _s(4)
-        show_time = ev_h >= _s(44)
-        if show_time:
-            lbl_h -= _s(15)
-        # Clip to the event's own box so a run of narrow same-calendar
-        # double-bookings can never bleed text into a neighboring slot.
+        # Time range + title are one label block, time first — never a separate
+        # element anchored to the bottom of the box, so they always read
+        # together regardless of how tall the event is.
+        # A spanning event with children only labels its own reserved spine —
+        # children are already confined (via _calc_bounds) to the width to the
+        # right of it, so this label can never end up covered by one of them.
+        pad_x   = _s(6)
+        label_w = ev_w * _SPINE_FRACTION if id(ev) in has_children_ids else ev_w
+        lbl_x   = ev_x + pad_x
+        lbl_y   = ev_y + _s(2)
+        lbl_w   = label_w - pad_x - _s(3)
+        lbl_h   = ev_h - _s(4)
+        # Clip to the label area so a run of narrow same-calendar
+        # double-bookings — or a container's children — can never bleed
+        # text into a neighboring slot.
         prev_clip = surf.get_clip()
-        surf.set_clip(pygame.Rect(int(ev_x), int(ev_y), int(ev_w), int(ev_h)))
+        surf.set_clip(pygame.Rect(int(ev_x), int(ev_y), int(label_w), int(ev_h)))
+        min_time_h = _font(8).get_linesize()
+        if lbl_h >= min_time_h + _s(10):
+            # Shrink the font, then wrap onto a second line, before ever
+            # truncating with "…" — the end time matters as much as the start
+            # time, so it must stay legible rather than getting clipped off a
+            # narrow column.
+            max_lines = 2 if lbl_h >= min_time_h * 2 + _s(10) else 1
+            time_fnt, time_lines = _fit_time_lines(ev["start"], ev["end"], int(lbl_w), max_lines)
+            time_h = time_fnt.get_linesize()
+            for ln in time_lines:
+                t1 = time_fnt.render(ln, True, ev_txt_c)
+                surf.blit(t1, (int(lbl_x), int(lbl_y)))
+                lbl_y += time_h
+                lbl_h -= time_h
         _draw_event_label(surf, ev["title"], lbl_x, lbl_y, lbl_w, lbl_h, ev_txt_c,
                           base_size=16, min_size=11, valign="top")
-        if show_time:
-            time_fnt = _font(13)
-            time_str = _trunc(ev["start"].strftime("%-I:%M %p"), time_fnt, int(lbl_w))
-            t2 = time_fnt.render(time_str, True, ev_txt_c)
-            surf.blit(t2, (int(ev_x + pad_x), int(ev_y + ev_h - _s(15))))
         surf.set_clip(prev_clip)
 
     # now-line is intentionally omitted here — drawn as an overlay in main()

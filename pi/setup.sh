@@ -48,6 +48,7 @@ apt-get install -y -qq \
   libopenjp2-7 libtiff6 libfreetype6 \
   sqlite3 \
   fonts-dejavu-core fonts-liberation \
+  cec-utils \
   nginx git curl wget ca-certificates
 
 # -- Create user ---------------------------------------------------------------

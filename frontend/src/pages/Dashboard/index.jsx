@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from "react";
 import {
   Box, Typography, Paper, Chip, IconButton, CircularProgress,
   Tooltip, ToggleButtonGroup, ToggleButton, Button,
@@ -44,14 +44,41 @@ function formatTime12(date) {
   return `${h}:${String(m).padStart(2, "0")}${ampm}`;
 }
 
-// Compact start-end range, e.g. "9:45-11:30am" or "11:45am-12:15pm" — only
-// shown once when both ends share the same am/pm.
+// Compact start-end range, e.g. "9:45 - 11:30am" or "11:45am - 12:15pm" — only
+// shown once when both ends share the same am/pm. Spaced around the dash
+// (rather than tight) so a narrow event has a clean word-wrap point instead
+// of needing to be truncated mid-string.
 function formatTimeRange12(start, end) {
   const sAmPm = start.getHours() >= 12 ? "pm" : "am";
   const eAmPm = end.getHours()   >= 12 ? "pm" : "am";
   const s = formatTime12(start).replace(/(am|pm)$/, "");
   const e = formatTime12(end);
-  return sAmPm === eAmPm ? `${s}–${e}` : `${s}${sAmPm}–${e}`;
+  return sAmPm === eAmPm ? `${s} - ${e}` : `${s}${sAmPm} - ${e}`;
+}
+
+// Shows the full start-end range, but degrades to just the start time if the
+// range doesn't actually fit in the rendered box — measured for real via the
+// DOM (CSS alone can't reliably shrink-to-fit down to a few pixels of width,
+// which is what a heavily double-booked column can end up with). Never wraps
+// or truncates with "…"; nowrap + clipped overflow is the deliberate final
+// fallback so at minimum the start time reads cleanly instead of character-
+// by-character across multiple lines.
+function EventTimeLabel({ start, end, sx }) {
+  const ref = useRef(null);
+  const [showRange, setShowRange] = useState(true);
+
+  useLayoutEffect(() => { setShowRange(true); }, [start, end]);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !showRange) return;
+    if (el.scrollWidth > el.clientWidth + 1) setShowRange(false);
+  }, [showRange, start, end]);
+
+  return (
+    <Typography ref={ref} sx={{ whiteSpace: "nowrap", overflow: "hidden", ...sx }}>
+      {showRange ? formatTimeRange12(start, end) : formatTime12(start)}
+    </Typography>
+  );
 }
 
 // Identifies "the same calendar" for column grouping — a person can have several
@@ -861,12 +888,9 @@ function CalendarGrid({ view, baseDate }) {
                                 (matching the width calcBounds carves out for it above) so it can
                                 never end up covered by a child rendered on top of it. */}
                             <Box sx={hasKids ? { width: `${SPINE_FRACTION * 100}%`, overflow: "hidden" } : undefined}>
-                              <Typography sx={{
+                              <EventTimeLabel start={ev.start} end={ev.end} sx={{
                                 fontSize: "0.58rem", fontWeight: 700, lineHeight: 1.2, opacity: 0.85,
-                                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                              }}>
-                                {formatTimeRange12(ev.start, ev.end)}
-                              </Typography>
+                              }} />
                               <Typography sx={{
                                 fontSize: "0.65rem", fontWeight: 600, lineHeight: 1.2,
                                 overflow: "hidden", display: "-webkit-box",

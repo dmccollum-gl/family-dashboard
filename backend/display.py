@@ -442,15 +442,17 @@ def _blit(surf: pygame.Surface, text: str, size: int, color: tuple,
 
 
 def _format_time_range(start: datetime, end: datetime) -> str:
-    """Compact start-end range, e.g. '9:45-11:30am' or '11:45am-12:15pm' —
-    only shown once when both ends share the same am/pm."""
+    """Compact start-end range, e.g. '9:45 - 11:30am' or '11:45am - 12:15pm' —
+    only shown once when both ends share the same am/pm. Spaced around the
+    dash (rather than tight) so a narrow event has a clean word-wrap point
+    instead of getting truncated mid-string."""
     s_ap = start.strftime("%p").lower()
     e_ap = end.strftime("%p").lower()
     s = start.strftime("%-I:%M")
     e = end.strftime("%-I:%M")
     if s_ap == e_ap:
-        return f"{s}–{e}{e_ap}"
-    return f"{s}{s_ap}–{e}{e_ap}"
+        return f"{s} - {e}{e_ap}"
+    return f"{s}{s_ap} - {e}{e_ap}"
 
 
 def _trunc(text: str, fnt: pygame.font.Font, max_w: int) -> str:
@@ -492,6 +494,28 @@ def _ellipsize_last(s: str, fnt: pygame.font.Font, max_w: int) -> str:
     while s and fnt.size(s + "…")[0] > max_w:
         s = s[:-1]
     return (s + "…") if s else "…"
+
+
+def _fit_time_lines(start: datetime, end: datetime, max_w: int, max_lines: int,
+                    base_size: int = 11, min_size: int = 8):
+    """Pick the largest font (down to min_size) that wraps the start-end time
+    range to at most max_lines without needing a mid-word hard break, so the
+    range shrinks before it ever gets truncated. If even min_size can't fit
+    the full range (an extremely narrow box), fall back to the start time
+    alone — still useful — rather than an awkward mid-range truncation."""
+    full = _format_time_range(start, end)
+    for size in range(base_size, min_size - 1, -1):
+        fnt   = _font(size)
+        lines = _wrap_to_width(full, fnt, max_w)
+        if len(lines) <= max_lines:
+            return fnt, lines
+    start_only = start.strftime("%-I:%M%p").lower()
+    for size in range(base_size, min_size - 1, -1):
+        fnt = _font(size)
+        if fnt.size(start_only)[0] <= max_w:
+            return fnt, [start_only]
+    fnt = _font(min_size)
+    return fnt, [_trunc(start_only, fnt, max_w)]
 
 
 def _draw_event_label(surf: pygame.Surface, text: str, x: float, y: float,
@@ -1352,14 +1376,20 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         # text into a neighboring slot.
         prev_clip = surf.get_clip()
         surf.set_clip(pygame.Rect(int(ev_x), int(ev_y), int(label_w), int(ev_h)))
-        time_fnt = _font(11)
-        time_h   = time_fnt.get_linesize()
-        if lbl_h >= time_h + _s(10):
-            time_str = _trunc(_format_time_range(ev["start"], ev["end"]), time_fnt, int(lbl_w))
-            t1 = time_fnt.render(time_str, True, ev_txt_c)
-            surf.blit(t1, (int(lbl_x), int(lbl_y)))
-            lbl_y += time_h
-            lbl_h -= time_h
+        min_time_h = _font(8).get_linesize()
+        if lbl_h >= min_time_h + _s(10):
+            # Shrink the font, then wrap onto a second line, before ever
+            # truncating with "…" — the end time matters as much as the start
+            # time, so it must stay legible rather than getting clipped off a
+            # narrow column.
+            max_lines = 2 if lbl_h >= min_time_h * 2 + _s(10) else 1
+            time_fnt, time_lines = _fit_time_lines(ev["start"], ev["end"], int(lbl_w), max_lines)
+            time_h = time_fnt.get_linesize()
+            for ln in time_lines:
+                t1 = time_fnt.render(ln, True, ev_txt_c)
+                surf.blit(t1, (int(lbl_x), int(lbl_y)))
+                lbl_y += time_h
+                lbl_h -= time_h
         _draw_event_label(surf, ev["title"], lbl_x, lbl_y, lbl_w, lbl_h, ev_txt_c,
                           base_size=16, min_size=11, valign="top")
         surf.set_clip(prev_clip)

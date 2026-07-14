@@ -657,10 +657,16 @@ def _greedy_columns(evs: list) -> None:
 def _layout_timed(evs: list) -> list:
     """Lay out timed events in stable per-calendar columns instead of raw greedy
     packing by start time — so a given person/calendar always lands in the same
-    lane instead of shuffling day to day, and column count on a given day is
-    "how many calendars are active today" rather than "how many events happen
-    to overlap", which keeps columns readably wide. Same-calendar double-
-    bookings still sub-divide within that calendar's own column.
+    lane relative to whoever it's actually double-booked against, instead of
+    shuffling day to day.
+
+    Width is NOT "how many calendars have any event that day" — a calendar
+    whose events never actually overlap anyone else that day gets full width,
+    same as before. Only calendars with a genuine time conflict share a
+    narrower slot: events are grouped into connected components by real
+    cross-calendar time overlap, and each component gets its own compact,
+    alphabetically-ordered set of columns. Same-calendar double-bookings still
+    sub-divide within that calendar's own column via _greedy_columns.
     """
     if not evs:
         return evs
@@ -673,18 +679,45 @@ def _layout_timed(evs: list) -> list:
         by_day[ev["start"].date()].append(ev)
 
     for day_evs in by_day.values():
-        groups: dict = defaultdict(list)
+        cal_groups: dict = defaultdict(list)
         for ev in day_evs:
-            groups[_calendar_key(ev)].append(ev)
+            cal_groups[_calendar_key(ev)].append(ev)
+        for grp in cal_groups.values():
+            _greedy_columns(grp)   # same-calendar double-bookings
 
-        day_keys = sorted(groups.keys(), key=lambda k: order.get(k, len(order)))
-        total    = len(day_keys) or 1
+        # Connect events that overlap in time AND belong to different
+        # calendars (same-calendar overlap is already handled above).
+        n   = len(day_evs)
+        adj = [[] for _ in range(n)]
+        for i in range(n):
+            a = day_evs[i]
+            for j in range(i + 1, n):
+                b = day_evs[j]
+                if (_calendar_key(a) != _calendar_key(b) and
+                        a["start"] < b["end"] and a["end"] > b["start"]):
+                    adj[i].append(j)
+                    adj[j].append(i)
 
-        for col_idx, key in enumerate(day_keys):
-            grp = groups[key]
-            _greedy_columns(grp)
-            for ev in grp:
-                ev["_col"]   = col_idx
+        seen = [False] * n
+        for i in range(n):
+            if seen[i]:
+                continue
+            stack, comp = [i], []
+            seen[i] = True
+            while stack:
+                cur = stack.pop()
+                comp.append(cur)
+                for nb in adj[cur]:
+                    if not seen[nb]:
+                        seen[nb] = True
+                        stack.append(nb)
+            comp_keys = sorted({_calendar_key(day_evs[idx]) for idx in comp},
+                                key=lambda k: order.get(k, 0))
+            key_to_col = {k: c for c, k in enumerate(comp_keys)}
+            total = len(comp_keys)
+            for idx in comp:
+                ev = day_evs[idx]
+                ev["_col"]   = key_to_col[_calendar_key(ev)]
                 ev["_total"] = total
 
     return evs

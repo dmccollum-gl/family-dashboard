@@ -435,35 +435,69 @@ function greedyColumns(events, colField, totalField) {
 
 // Lays out a day's timed events in stable per-calendar columns (ordered by
 // calendarOrder) instead of raw greedy packing by start time — so a given
-// person/calendar always lands in the same slot instead of shuffling around
-// day to day, and column count is "how many calendars are active today" rather
-// than "how many events happen to overlap", which keeps columns readably wide.
+// person/calendar always lands in the same slot relative to whoever it's
+// actually double-booked against, instead of shuffling around day to day.
+//
+// Width is NOT "how many calendars have any event today" — a calendar whose
+// events never actually overlap anyone else that day gets full width. Only
+// calendars with a genuine time conflict share a narrower slot: events are
+// grouped into connected components by real cross-calendar time overlap, and
+// each component gets its own compact, stably-ordered set of columns.
 // Same-calendar double-bookings still sub-divide within that calendar's slot.
 function layoutTimedEvents(events, calendarOrder) {
-  const groups = new Map();
+  const byCal = new Map();
   for (const ev of events) {
     const key = calendarKey(ev);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(ev);
+    if (!byCal.has(key)) byCal.set(key, []);
+    byCal.get(key).push(ev);
+  }
+  for (const groupEvents of byCal.values()) {
+    greedyColumns(groupEvents, "_subCol", "_subTotal");
   }
 
-  const keys = [...groups.keys()].sort((a, b) => {
-    const ia = calendarOrder.has(a) ? calendarOrder.get(a) : Infinity;
-    const ib = calendarOrder.has(b) ? calendarOrder.get(b) : Infinity;
-    return ia !== ib ? ia - ib : a.localeCompare(b);
-  });
-
-  const total  = keys.length || 1;
-  const result = [];
-  keys.forEach((key, groupIdx) => {
-    const groupEvents = greedyColumns(groups.get(key), "_subCol", "_subTotal");
-    for (const ev of groupEvents) {
-      ev._col   = groupIdx;
-      ev._total = total;
-      result.push(ev);
+  // Connect events that overlap in time AND belong to different calendars
+  // (same-calendar overlap is already handled by greedyColumns above).
+  const n   = events.length;
+  const adj = Array.from({ length: n }, () => []);
+  for (let i = 0; i < n; i++) {
+    const a = events[i];
+    for (let j = i + 1; j < n; j++) {
+      const b = events[j];
+      if (calendarKey(a) !== calendarKey(b) &&
+          a.start.getTime() < b.end.getTime() && a.end.getTime() > b.start.getTime()) {
+        adj[i].push(j);
+        adj[j].push(i);
+      }
     }
-  });
-  return result;
+  }
+
+  const seen = new Array(n).fill(false);
+  for (let i = 0; i < n; i++) {
+    if (seen[i]) continue;
+    const stack = [i];
+    const comp  = [];
+    seen[i] = true;
+    while (stack.length) {
+      const cur = stack.pop();
+      comp.push(cur);
+      for (const nb of adj[cur]) {
+        if (!seen[nb]) { seen[nb] = true; stack.push(nb); }
+      }
+    }
+    const compKeys = [...new Set(comp.map(idx => calendarKey(events[idx])))].sort((a, b) => {
+      const ia = calendarOrder.has(a) ? calendarOrder.get(a) : Infinity;
+      const ib = calendarOrder.has(b) ? calendarOrder.get(b) : Infinity;
+      return ia !== ib ? ia - ib : a.localeCompare(b);
+    });
+    const keyToCol = new Map(compKeys.map((k, c) => [k, c]));
+    const total    = compKeys.length;
+    for (const idx of comp) {
+      const ev = events[idx];
+      ev._col   = keyToCol.get(calendarKey(ev));
+      ev._total = total;
+    }
+  }
+  return events;
 }
 
 // ── Calendar grid ──────────────────────────────────────────────────────────────

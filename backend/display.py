@@ -713,6 +713,11 @@ def _assign_macro_columns(peers: list, order: dict) -> None:
 
 _SPAN_RATIO = 2.0  # container must be at least this many times longer to "span across"
 
+# Fraction of a spanning event's own width permanently reserved, left-aligned,
+# for its own time/title — children rendered on top of it are confined to the
+# remaining width, so neither event's title is ever covered by the other.
+_SPINE_FRACTION = 0.34
+
 
 def _find_container(ev: dict, day_evs: list):
     """The tightest OTHER event in day_evs that genuinely spans across ev, or
@@ -1227,7 +1232,12 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
     def _calc_bounds(ev: dict, day_bx: float):
         """Pixel (x, width) for ev, inset within its container's own bounds
         (recursively) if it spans across another event, or within the day
-        column's macro/sub-column slot if it's a background/root event."""
+        column's macro/sub-column slot if it's a background/root event.
+
+        A container's own time/title live in a reserved left "spine" (see
+        _SPINE_FRACTION) that this never encroaches on — children only ever
+        get the width to the right of it, so a child can't be positioned
+        (by its own start time) directly over the container's label."""
         key = id(ev)
         if key in bounds_memo:
             return bounds_memo[key]
@@ -1240,16 +1250,23 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             slot_x  = day_bx + _s(2)
             slot_w  = col_w - _s(4)
         else:
-            slot_x, slot_w = _calc_bounds(container, day_bx)
-            inset  = min(_s(6), slot_w * 0.15)
-            slot_x = slot_x + inset
-            slot_w = max(_s(10), slot_w - 2 * inset)
+            parent_x, parent_w = _calc_bounds(container, day_bx)
+            spine_w = parent_w * _SPINE_FRACTION
+            avail_x = parent_x + spine_w
+            avail_w = max(_s(10), parent_w - spine_w)
+            inset   = min(_s(6), avail_w * 0.15)
+            slot_x  = avail_x + inset
+            slot_w  = max(_s(10), avail_w - 2 * inset)
         macro_w = slot_w / max(tot, 1)
         sub_w   = macro_w / max(subtot, 1)
         px = slot_x + col * macro_w + subcol * sub_w
         result = (px, sub_w)
         bounds_memo[key] = result
         return result
+
+    has_children_ids = {
+        id(ev["_container"]) for ev in timed_evs if ev.get("_container") is not None
+    }
 
     visible_evs = []
     for ev in timed_evs:
@@ -1308,18 +1325,23 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             surf.blit(sheen, (int(ev_x) + _s(1), int(ev_y) + _s(1)))
         # Wrap the title to fill the block (multi-line, auto-sized) instead of
         # clipping it to a single line. On tall blocks, reserve room for the time.
-        pad_x    = _s(6)
-        lbl_x    = ev_x + pad_x
-        lbl_y    = ev_y + _s(2)
-        lbl_w    = ev_w - pad_x - _s(3)
-        lbl_h    = ev_h - _s(4)
+        # A spanning event with children only labels its own reserved spine —
+        # children are already confined (via _calc_bounds) to the width to the
+        # right of it, so this label can never end up covered by one of them.
+        pad_x     = _s(6)
+        label_w   = ev_w * _SPINE_FRACTION if id(ev) in has_children_ids else ev_w
+        lbl_x     = ev_x + pad_x
+        lbl_y     = ev_y + _s(2)
+        lbl_w     = label_w - pad_x - _s(3)
+        lbl_h     = ev_h - _s(4)
         show_time = ev_h >= _s(44)
         if show_time:
             lbl_h -= _s(15)
-        # Clip to the event's own box so a run of narrow same-calendar
-        # double-bookings can never bleed text into a neighboring slot.
+        # Clip to the label area so a run of narrow same-calendar
+        # double-bookings — or a container's children — can never bleed
+        # text into a neighboring slot.
         prev_clip = surf.get_clip()
-        surf.set_clip(pygame.Rect(int(ev_x), int(ev_y), int(ev_w), int(ev_h)))
+        surf.set_clip(pygame.Rect(int(ev_x), int(ev_y), int(label_w), int(ev_h)))
         _draw_event_label(surf, ev["title"], lbl_x, lbl_y, lbl_w, lbl_h, ev_txt_c,
                           base_size=16, min_size=11, valign="top")
         if show_time:

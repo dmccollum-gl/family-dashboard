@@ -509,6 +509,11 @@ function assignMacroColumns(peers, calendarOrder) {
 // one "spanning" the other.
 const SPAN_RATIO = 2;
 
+// Fraction of a spanning event's own width permanently reserved, left-aligned,
+// for its own time/title — children rendered on top of it are confined to the
+// remaining width, so neither event's title is ever covered by the other.
+const SPINE_FRACTION = 0.34;
+
 // The tightest OTHER event in dayEvents that genuinely spans across ev, or
 // null. This is what distinguishes an all-day-ish "Block" (renders as a
 // full-width background, with events inside it layered on top) from a
@@ -754,6 +759,10 @@ function CalendarGrid({ view, baseDate }) {
                   return n;
                 };
                 const drawOrder = [...timedEvs].sort((a, b) => depthOf(a) - depthOf(b));
+                // Events that have at least one other event layered on top of them —
+                // their own label is confined to a reserved left "spine" (below) so
+                // it can never end up covered by one of those children.
+                const hasChildrenSet = new Set(timedEvs.filter(e => e._container).map(e => e._container));
                 // Percentage-of-day-column (x, width) for ev, inset within its
                 // container's own bounds (recursively) if it spans across another
                 // event, or within the day's macro/sub-column slot otherwise.
@@ -766,9 +775,14 @@ function CalendarGrid({ view, baseDate }) {
                     slotW = 100;
                   } else {
                     const [px, pw] = calcBounds(ev._container);
-                    const inset = pw * 0.07;
-                    slotX = px + inset;
-                    slotW = Math.max(pw * 0.3, pw - 2 * inset);
+                    // The container reserves a left spine (SPINE_FRACTION) for its own
+                    // time/title — children only ever get the width to the right of it.
+                    const spineW = pw * SPINE_FRACTION;
+                    const availX = px + spineW;
+                    const availW = Math.max(10, pw - spineW);
+                    const inset  = availW * 0.07;
+                    slotX = availX + inset;
+                    slotW = Math.max(availW * 0.3, availW - 2 * inset);
                   }
                   const macroW = slotW / ev._total;
                   const subW   = macroW / ev._subTotal;
@@ -801,13 +815,14 @@ function CalendarGrid({ view, baseDate }) {
                       const hPct       = Math.max(100 / GRID_HOURS * 0.33, durationHr / GRID_HOURS * 100);
                       const [leftPct, widthPct] = calcBounds(ev);
                       const nested      = !!ev._container;
+                      const hasKids     = hasChildrenSet.has(ev);
                       // Duration tiers (not flex-shrink) decide what fits — a box this short
                       // is a fixed, small number of pixels regardless of screen size, so we
                       // pick a fixed number of text lines instead of letting content overflow
                       // and get squeezed/overlapped by the browser.
                       const isCramped  = ev._subTotal > 1 || nested || durationHr < 0.75;
                       const titleLines = durationHr < 0.5 ? 1 : 2;
-                      const showCalName = !isCramped && durationHr >= 1.25;
+                      const showCalName = !isCramped && durationHr >= 1.25 && !hasKids;
                       const textColor   = getContrastText(ev.color);
                       return (
                         <Tooltip key={ev.id} title={`${ev.calendarName} · ${ev.userName} · ${formatTime12(ev.start)}–${formatTime12(ev.end)}`} placement="right">
@@ -829,25 +844,30 @@ function CalendarGrid({ view, baseDate }) {
                               boxShadow: "1px 2px 5px rgba(0,0,0,0.35)",
                             } : {}),
                           }}>
-                            <Typography sx={{
-                              fontSize: "0.58rem", fontWeight: 700, lineHeight: 1.2, opacity: 0.85,
-                              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                            }}>
-                              {formatTime12(ev.start)}
-                            </Typography>
-                            <Typography sx={{
-                              fontSize: "0.65rem", fontWeight: 600, lineHeight: 1.2,
-                              overflow: "hidden", display: "-webkit-box",
-                              WebkitLineClamp: titleLines, WebkitBoxOrient: "vertical",
-                              wordBreak: "break-word",
-                            }}>
-                              {ev.title}
-                            </Typography>
-                            {showCalName && (
-                              <Typography sx={{ fontSize: "0.5rem", opacity: 0.8, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
-                                {ev.calendarName}
+                            {/* A container's own label is confined to a reserved left "spine"
+                                (matching the width calcBounds carves out for it above) so it can
+                                never end up covered by a child rendered on top of it. */}
+                            <Box sx={hasKids ? { width: `${SPINE_FRACTION * 100}%`, overflow: "hidden" } : undefined}>
+                              <Typography sx={{
+                                fontSize: "0.58rem", fontWeight: 700, lineHeight: 1.2, opacity: 0.85,
+                                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                              }}>
+                                {formatTime12(ev.start)}
                               </Typography>
-                            )}
+                              <Typography sx={{
+                                fontSize: "0.65rem", fontWeight: 600, lineHeight: 1.2,
+                                overflow: "hidden", display: "-webkit-box",
+                                WebkitLineClamp: titleLines, WebkitBoxOrient: "vertical",
+                                wordBreak: "break-word",
+                              }}>
+                                {ev.title}
+                              </Typography>
+                              {showCalName && (
+                                <Typography sx={{ fontSize: "0.5rem", opacity: 0.8, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+                                  {ev.calendarName}
+                                </Typography>
+                              )}
+                            </Box>
                           </Box>
                         </Tooltip>
                       );

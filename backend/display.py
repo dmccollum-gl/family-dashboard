@@ -690,6 +690,9 @@ def _greedy_columns(evs: list) -> None:
         ev["_subtotal"] = mx + 1
 
 
+_MAX_COLS = 3  # cap on side-by-side columns within one tier — see _assign_macro_columns
+
+
 def _assign_macro_columns(peers: list, order: dict) -> None:
     """Assign _col/_total/_subcol/_subtotal among a list of same-tier "peer"
     events (either all the day's root events, or all the children sharing one
@@ -739,12 +742,32 @@ def _assign_macro_columns(peers: list, order: dict) -> None:
                     stack.append(nb)
         comp_keys = sorted({_calendar_key(peers[idx]) for idx in comp},
                             key=lambda k: order.get(k, 0))
-        key_to_col = {k: c for c, k in enumerate(comp_keys)}
-        total = len(comp_keys)
-        for idx in comp:
-            ev = peers[idx]
-            ev["_col"]   = key_to_col[_calendar_key(ev)]
-            ev["_total"] = total
+
+        if len(comp_keys) <= _MAX_COLS:
+            key_to_col = {k: c for c, k in enumerate(comp_keys)}
+            total = len(comp_keys)
+            for idx in comp:
+                ev = peers[idx]
+                ev["_col"]   = key_to_col[_calendar_key(ev)]
+                ev["_total"] = total
+        else:
+            # More distinct calendars are genuinely conflicting than can each
+            # get a readable column — giving every one its own sliver just
+            # makes all of them unreadable. Keep the first _MAX_COLS-1 (by the
+            # stable order) in their own lane; pool everyone else into one
+            # shared lane, sub-divided only among themselves by real overlap.
+            # Most overflow events won't actually overlap each other, so they
+            # mostly get the full shared lane one at a time instead of every
+            # calendar splitting evenly.
+            primary = set(comp_keys[:_MAX_COLS - 1])
+            key_to_col = {k: c for c, k in enumerate(comp_keys[:_MAX_COLS - 1])}
+            overflow_evs = [peers[idx] for idx in comp if _calendar_key(peers[idx]) not in primary]
+            _greedy_columns(overflow_evs)  # repurposes _subcol/_subtotal for shared-lane packing
+            for idx in comp:
+                ev  = peers[idx]
+                key = _calendar_key(ev)
+                ev["_col"]   = key_to_col[key] if key in primary else _MAX_COLS - 1
+                ev["_total"] = _MAX_COLS
 
 
 _SPAN_RATIO = 2.0  # container must be at least this many times longer to "span across"

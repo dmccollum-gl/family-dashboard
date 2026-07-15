@@ -470,6 +470,9 @@ function greedyColumns(events, colField, totalField) {
   return sorted;
 }
 
+// Cap on side-by-side columns within one tier — see assignMacroColumns.
+const MAX_COLS = 3;
+
 // Assigns _col/_total/_subCol/_subTotal among a list of same-tier "peer"
 // events (either all of a day's root events, or all the children sharing one
 // direct container). Must be called per-tier, after containment is resolved
@@ -529,12 +532,33 @@ function assignMacroColumns(peers, calendarOrder) {
       const ib = calendarOrder.has(b) ? calendarOrder.get(b) : Infinity;
       return ia !== ib ? ia - ib : a.localeCompare(b);
     });
-    const keyToCol = new Map(compKeys.map((k, c) => [k, c]));
-    const total    = compKeys.length;
-    for (const idx of comp) {
-      const ev = peers[idx];
-      ev._col   = keyToCol.get(calendarKey(ev));
-      ev._total = total;
+
+    if (compKeys.length <= MAX_COLS) {
+      const keyToCol = new Map(compKeys.map((k, c) => [k, c]));
+      const total    = compKeys.length;
+      for (const idx of comp) {
+        const ev = peers[idx];
+        ev._col   = keyToCol.get(calendarKey(ev));
+        ev._total = total;
+      }
+    } else {
+      // More distinct calendars are genuinely conflicting than can each get a
+      // readable column — giving every one its own sliver just makes all of
+      // them unreadable. Keep the first MAX_COLS-1 (by the stable order) in
+      // their own lane; pool everyone else into one shared lane, sub-divided
+      // only among themselves by real overlap. Most overflow events won't
+      // actually overlap each other, so they mostly get the full shared lane
+      // one at a time instead of every calendar splitting evenly.
+      const primary   = new Set(compKeys.slice(0, MAX_COLS - 1));
+      const keyToCol  = new Map(compKeys.slice(0, MAX_COLS - 1).map((k, c) => [k, c]));
+      const overflow  = comp.map(idx => peers[idx]).filter(ev => !primary.has(calendarKey(ev)));
+      greedyColumns(overflow, "_subCol", "_subTotal"); // repurposed for shared-lane packing
+      for (const idx of comp) {
+        const ev  = peers[idx];
+        const key = calendarKey(ev);
+        ev._col   = primary.has(key) ? keyToCol.get(key) : MAX_COLS - 1;
+        ev._total = MAX_COLS;
+      }
     }
   }
 }

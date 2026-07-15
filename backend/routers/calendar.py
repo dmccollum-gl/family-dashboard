@@ -130,6 +130,94 @@ async def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
         return None
 
 
+async def _fetch_one_calendar(
+    client: httpx.AsyncClient, token: str, cal_id: str, cal_color: str,
+    cal_name: str, user_name: str, time_min: str, time_max: str,
+) -> tuple[list, int]:
+    """Fetch a single calendar's events. Returns (events, network_error_count)."""
+    try:
+        res = await client.get(
+            f"https://www.googleapis.com/calendar/v3/calendars/{quote(cal_id, safe='')}/events",
+            params={
+                "timeMin":      time_min,
+                "timeMax":      time_max,
+                "singleEvents": "true",
+                "orderBy":      "startTime",
+                "maxResults":   "250",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if res.status_code != 200:
+            return [], 0
+        events = []
+        for ev in res.json().get("items", []):
+            if ev.get("status") == "cancelled":
+                continue
+            ev_start = ev.get("start", {})
+            ev_end   = ev.get("end",   {})
+            all_day  = "date" in ev_start and "dateTime" not in ev_start
+            events.append({
+                "id":           ev["id"] + cal_id,
+                "title":        ev.get("summary", "(no title)"),
+                "start":        ev_start.get("dateTime") or ev_start.get("date"),
+                "end":          ev_end.get("dateTime")   or ev_end.get("date"),
+                "allDay":       all_day,
+                "color":        cal_color,
+                "userName":     user_name,
+                "calendarName": cal_name,
+            })
+        return events, 0
+    except Exception:
+        return [], 1
+
+
+async def _fetch_one_user(
+    client: httpx.AsyncClient, user: UserPrefs, env: dict, time_min: str, time_max: str,
+) -> tuple[list, str | None, int]:
+    """Fetch every selected calendar for one user, concurrently. Returns
+    (events, expired_display_name_or_None, network_error_count)."""
+    token = await _get_valid_token(user, env)
+    if not token:
+        return [], (user.display_name or user.email), 0
+
+    user_name = user.display_name or user.email
+
+    # Normalize selected_calendars: support both legacy ["id"] and new [{"id","color"}] formats.
+    raw_cals = user.selected_calendars or [user.email]
+    cal_configs = [
+        c if isinstance(c, dict) else {"id": c, "color": None}
+        for c in raw_cals
+    ]
+
+    network_errors = 0
+    cal_names = {}
+    try:
+        list_res = await client.get(
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+            params={"maxResults": "250"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if list_res.status_code == 200:
+            for cal in list_res.json().get("items", []):
+                cal_names[cal["id"]] = cal.get("summaryOverride") or cal.get("summary") or cal["id"]
+    except Exception:
+        network_errors += 1
+
+    results = await asyncio.gather(*[
+        _fetch_one_calendar(
+            client, token, cfg["id"], cfg.get("color") or user.display_color or "#1976d2",
+            cal_names.get(cfg["id"], cfg["id"]), user_name, time_min, time_max,
+        )
+        for cfg in cal_configs
+    ])
+
+    events: list = []
+    for evs, errs in results:
+        events.extend(evs)
+        network_errors += errs
+    return events, None, network_errors
+
+
 @router.get("/events")
 async def get_all_events(start: str = None, end: str = None):
     use_cache = not start and not end
@@ -163,70 +251,20 @@ async def get_all_events(start: str = None, end: str = None):
         expired_users  = []
         network_errors = 0  # count Google API connection failures
 
+        # Every user's calendars — and every calendar within a user — fetch
+        # concurrently instead of one HTTP round-trip at a time. Wall-clock
+        # time drops from the sum of every fetch's latency to roughly the
+        # slowest single one.
         async with httpx.AsyncClient(timeout=10) as client:
-            for user in users:
-                token = await _get_valid_token(user, env)
-                if not token:
-                    expired_users.append(user.display_name or user.email)
-                    continue
+            user_results = await asyncio.gather(*[
+                _fetch_one_user(client, user, env, time_min, time_max) for user in users
+            ])
 
-                # Normalize selected_calendars: support both legacy ["id"] and new [{"id","color"}] formats.
-                raw_cals = user.selected_calendars or [user.email]
-                cal_configs = [
-                    c if isinstance(c, dict) else {"id": c, "color": None}
-                    for c in raw_cals
-                ]
-
-                cal_names = {}
-                try:
-                    list_res = await client.get(
-                        "https://www.googleapis.com/calendar/v3/users/me/calendarList",
-                        params={"maxResults": "250"},
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-                    if list_res.status_code == 200:
-                        for cal in list_res.json().get("items", []):
-                            cal_names[cal["id"]] = cal.get("summaryOverride") or cal.get("summary") or cal["id"]
-                except Exception:
-                    network_errors += 1
-
-                for cfg in cal_configs:
-                    cal_id    = cfg["id"]
-                    cal_color = cfg.get("color") or user.display_color or "#1976d2"
-                    cal_name  = cal_names.get(cal_id, cal_id)
-                    try:
-                        res = await client.get(
-                            f"https://www.googleapis.com/calendar/v3/calendars/{quote(cal_id, safe='')}/events",
-                            params={
-                                "timeMin":      time_min,
-                                "timeMax":      time_max,
-                                "singleEvents": "true",
-                                "orderBy":      "startTime",
-                                "maxResults":   "250",
-                            },
-                            headers={"Authorization": f"Bearer {token}"},
-                        )
-                        if res.status_code != 200:
-                            continue
-                        for ev in res.json().get("items", []):
-                            if ev.get("status") == "cancelled":
-                                continue
-                            ev_start = ev.get("start", {})
-                            ev_end   = ev.get("end",   {})
-                            all_day  = "date" in ev_start and "dateTime" not in ev_start
-                            all_events.append({
-                                "id":           ev["id"] + cal_id,
-                                "title":        ev.get("summary", "(no title)"),
-                                "start":        ev_start.get("dateTime") or ev_start.get("date"),
-                                "end":          ev_end.get("dateTime")   or ev_end.get("date"),
-                                "allDay":       all_day,
-                                "color":        cal_color,
-                                "userName":     user.display_name  or user.email,
-                                "calendarName": cal_name,
-                            })
-                    except Exception:
-                        network_errors += 1
-                        continue
+        for events, expired_name, errs in user_results:
+            all_events.extend(events)
+            if expired_name:
+                expired_users.append(expired_name)
+            network_errors += errs
 
         global _last_good_events
 

@@ -100,6 +100,25 @@ server {
     root /opt/dashboard/frontend-dist;
     index index.html;
 
+    # Compress the JS/CSS bundle in transit — the built assets are several
+    # hundred KB uncompressed. Independent of the no-cache headers below.
+    gzip on;
+    gzip_vary on;
+    gzip_comp_level 5;
+    gzip_min_length 256;
+    gzip_proxied any;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        application/json
+        application/javascript
+        application/xml
+        application/xml+rss
+        image/svg+xml
+        font/ttf
+        font/otf;
+
     # Never cache index.html -- captive portal browsers must get a fresh copy
     location = /index.html {
         try_files $uri =404;

@@ -220,6 +220,25 @@ server {
     root /opt/dashboard/frontend-dist;
     index index.html;
 
+    # Compress the JS/CSS bundle in transit — the built assets are several
+    # hundred KB uncompressed, and this Pi is often reached over WiFi.
+    gzip on;
+    gzip_vary on;
+    gzip_comp_level 5;
+    gzip_min_length 256;
+    gzip_proxied any;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        application/json
+        application/javascript
+        application/xml
+        application/xml+rss
+        image/svg+xml
+        font/ttf
+        font/otf;
+
     location / {
         try_files $uri $uri/ /index.html;
     }

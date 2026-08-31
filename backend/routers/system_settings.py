@@ -296,6 +296,98 @@ def shutdown_pi(_user=Depends(require_owner)):
     return {"status": "shutting_down"}
 
 
+# ── WiFi ───────────────────────────────────────────────────────────────────────
+
+_HOTSPOT_CON = "dashboard-hotspot"
+
+
+def _wifi_status() -> dict:
+    """Current active (non-hotspot) network connection."""
+    try:
+        r = subprocess.run(
+            ["nmcli", "-t", "-f", "NAME,TYPE,STATE", "con", "show", "--active"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.strip().splitlines():
+            p = line.split(":")
+            if len(p) < 3 or p[0] == _HOTSPOT_CON or p[2] != "activated":
+                continue
+            if p[1] == "802-3-ethernet":
+                return {"connected": True, "type": "ethernet", "ssid": None}
+            if p[1] == "802-11-wireless":
+                return {"connected": True, "type": "wifi", "ssid": p[0]}
+    except Exception:
+        pass
+    return {"connected": False, "type": "none", "ssid": None}
+
+
+@router.get("/wifi")
+def wifi_get(_user=Depends(require_owner)):
+    return _wifi_status()
+
+
+@router.get("/wifi/scan")
+def wifi_scan(_user=Depends(require_owner)):
+    try:
+        subprocess.run(["nmcli", "device", "wifi", "rescan", "ifname", "wlan0"],
+                       capture_output=True, timeout=10)
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY",
+             "device", "wifi", "list", "ifname", "wlan0", "--rescan", "yes"],
+            capture_output=True, text=True, timeout=20,
+        )
+        nets, seen = [], set()
+        for line in r.stdout.strip().splitlines():
+            p = line.split(":")
+            ssid = p[0].strip() if p else ""
+            if not ssid or ssid in seen or ssid == "Dashboard-Setup":
+                continue
+            seen.add(ssid)
+            nets.append({
+                "ssid":     ssid,
+                "signal":   int(p[1]) if len(p) > 1 and p[1].isdigit() else 0,
+                "security": p[2] if len(p) > 2 else "none",
+            })
+        nets.sort(key=lambda n: n["signal"], reverse=True)
+        return {"networks": nets}
+    except Exception as e:
+        return {"networks": [], "error": str(e)}
+
+
+@router.post("/wifi")
+def wifi_connect(body: dict, _user=Depends(require_owner)):
+    """Switch the Pi to a new WiFi network. Applied in the background because the
+    switch drops the current connection; the helper falls back to the previous
+    network if the new credentials fail, so the device is never orphaned."""
+    ssid     = (body.get("ssid") or "").strip()
+    password = body.get("password") or ""
+    if not ssid:
+        raise HTTPException(status_code=400, detail="A network name (SSID) is required.")
+    if any(c in ssid + password for c in "\n\r"):
+        raise HTTPException(status_code=400, detail="SSID/password cannot contain line breaks.")
+    script = _APP_DIR / "pi" / "wifi-connect.sh"
+    if not script.exists():
+        raise HTTPException(status_code=400, detail="WiFi helper not found — update the device first.")
+
+    def _apply(ssid=ssid, pw=password):
+        import time as _t
+        _t.sleep(1.0)   # let the HTTP response flush before the network switches
+        try:
+            proc = subprocess.Popen(
+                ["sudo", "-n", "bash", str(script), ssid],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            proc.communicate(input=(pw + "\n").encode(), timeout=90)
+        except Exception:
+            pass
+
+    threading.Thread(target=_apply, daemon=True).start()
+    return {"status": "applying", "ssid": ssid}
+
+
 # ── Cloudflare Tunnel ──────────────────────────────────────────────────────────
 
 @router.get("/tunnel")

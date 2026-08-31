@@ -21,6 +21,7 @@ import GroupAddIcon              from "@mui/icons-material/GroupAdd";
 import AddCircleOutlineIcon      from "@mui/icons-material/AddCircleOutline";
 import AddIcon                   from "@mui/icons-material/Add";
 import RssFeedIcon               from "@mui/icons-material/RssFeed";
+import WifiIcon                  from "@mui/icons-material/Wifi";
 import CloudIcon                 from "@mui/icons-material/Cloud";
 import ClearIcon                 from "@mui/icons-material/Clear";
 import TvIcon                    from "@mui/icons-material/Tv";
@@ -1500,6 +1501,136 @@ function PiDisplay() {
 }
 
 // ── Restart Services ───────────────────────────────────────────────────────────
+
+function WifiSettings() {
+  const [status,   setStatus]   = useState(null);
+  const [networks, setNetworks] = useState([]);
+  const [scanning, setScanning] = useState(false);
+  const [ssid,     setSsid]     = useState("");
+  const [password, setPassword] = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const [manual,   setManual]   = useState(false);
+  const [confirm,  setConfirm]  = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [msg,      setMsg]      = useState(null);
+  const [error,    setError]    = useState(null);
+
+  const loadStatus = useCallback(() => {
+    api.get("/api/settings/wifi").then(r => setStatus(r.data)).catch(() => setStatus(null));
+  }, []);
+  const scan = useCallback(() => {
+    setScanning(true);
+    api.get("/api/settings/wifi/scan")
+      .then(r => setNetworks(r.data.networks || []))
+      .catch(() => setNetworks([]))
+      .finally(() => setScanning(false));
+  }, []);
+  useEffect(() => { loadStatus(); scan(); }, [loadStatus, scan]);
+
+  const selected  = networks.find(n => n.ssid === ssid);
+  const needsPass = manual || (selected && selected.security && selected.security !== "none");
+  const canApply  = ssid.trim() && (!needsPass || password);
+
+  const doApply = async () => {
+    setConfirm(false); setApplying(true); setMsg(null); setError(null);
+    try {
+      await api.post("/api/settings/wifi", { ssid: ssid.trim(), password });
+      setMsg(`Switching to "${ssid.trim()}"… If this device is on that network you may lose this page for a minute — reconnect on the new network. If the password is wrong, it falls back to the current network automatically.`);
+    } catch (e) {
+      setError(e?.response?.data?.detail || "Could not start the WiFi change.");
+    } finally { setApplying(false); }
+  };
+
+  return (
+    <Section icon={<WifiIcon />} title="WiFi">
+      <Typography variant="body2" color="text.secondary">
+        Change which WiFi network this device connects to.
+      </Typography>
+
+      <Alert severity={status?.connected ? "success" : "warning"} icon={false} sx={{ py: 0.75 }}>
+        <Typography variant="body2">
+          {status == null      ? "Checking connection…"
+            : status.type === "ethernet" ? "Connected via Ethernet (WiFi not in use)."
+            : status.ssid      ? <>Currently connected to <strong>{status.ssid}</strong>.</>
+            :                    "Not connected to WiFi."}
+        </Typography>
+      </Alert>
+
+      {msg   && <Alert severity="info"  onClose={() => setMsg(null)}>{msg}</Alert>}
+      {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
+
+      {!manual && (
+        <>
+          <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <Typography variant="caption" color="text.secondary">
+              {scanning ? "Scanning…" : `${networks.length} network${networks.length !== 1 ? "s" : ""} found`}
+            </Typography>
+            <IconButton size="small" onClick={scan} disabled={scanning}><RefreshIcon fontSize="small" /></IconButton>
+          </Box>
+          {scanning && <LinearProgress />}
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, maxHeight: 240, overflowY: "auto" }}>
+            {networks.map(n => (
+              <Box key={n.ssid} onClick={() => { setSsid(n.ssid); setPassword(""); }}
+                sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", p: 1,
+                      border: "1px solid", borderColor: ssid === n.ssid ? "primary.main" : "divider",
+                      borderRadius: 1, cursor: "pointer" }}>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  <WifiIcon fontSize="small" color={ssid === n.ssid ? "primary" : "action"} />
+                  <Typography variant="body2">{n.ssid}</Typography>
+                  {n.security && n.security !== "none" && <LockIcon sx={{ fontSize: 14, opacity: 0.5 }} />}
+                </Box>
+                <Typography variant="caption" color="text.secondary">{n.signal}%</Typography>
+              </Box>
+            ))}
+          </Box>
+          <Button size="small" onClick={() => { setManual(true); setSsid(""); }}>Enter network name manually</Button>
+        </>
+      )}
+
+      {manual && (
+        <>
+          <TextField label="Network name (SSID)" size="small" fullWidth value={ssid}
+            onChange={e => setSsid(e.target.value)} autoFocus />
+          <Button size="small" onClick={() => { setManual(false); setSsid(""); scan(); }}>← Show scanned networks</Button>
+        </>
+      )}
+
+      {ssid && needsPass && (
+        <TextField label={`Password for "${ssid}"`} size="small" fullWidth
+          type={showPass ? "text" : "password"} value={password}
+          onChange={e => setPassword(e.target.value)}
+          InputProps={{ endAdornment: (
+            <InputAdornment position="end">
+              <IconButton onClick={() => setShowPass(s => !s)} edge="end">
+                {showPass ? <VisibilityOffIcon /> : <VisibilityIcon />}
+              </IconButton>
+            </InputAdornment>) }} />
+      )}
+
+      <Button variant="contained" disabled={!canApply || applying}
+        startIcon={applying ? <CircularProgress size={16} color="inherit" /> : <WifiIcon />}
+        onClick={() => setConfirm(true)}>
+        Connect
+      </Button>
+
+      <Dialog open={confirm} onClose={() => setConfirm(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Switch WiFi to “{ssid}”?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            The device will drop its current network to join <strong>{ssid}</strong>. If you're
+            viewing this page over that same network, you'll lose access here for a minute and must
+            reconnect on the new network. If the password is wrong, the device automatically falls
+            back to its current network.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirm(false)}>Cancel</Button>
+          <Button variant="contained" onClick={doApply}>Switch WiFi</Button>
+        </DialogActions>
+      </Dialog>
+    </Section>
+  );
+}
 
 function RestartServices() {
   const [backendBusy,  setBackendBusy]  = useState(false);
@@ -3620,6 +3751,7 @@ export default function Settings() {
     const admin = [
       isAdminOrOwner                  && { value: "permissions", label: "Permissions",        icon: <SecurityIcon fontSize="small" /> },
       (isOwner || !oauthConfigured)   && { value: "oauth",       label: "OAuth / Google",     icon: <LockIcon fontSize="small" /> },
+      isOwner                         && { value: "wifi",        label: "WiFi",               icon: <WifiIcon fontSize="small" /> },
       isOwner                         && { value: "tunnel",      label: "FQDN Setup",         icon: <RouterIcon fontSize="small" /> },
       isOwner                         && { value: "updates",     label: "Updates",            icon: <SystemUpdateAltIcon fontSize="small" /> },
       isOwner                         && { value: "ssh",         label: "SSH Access",         icon: <VpnKeyIcon fontSize="small" /> },
@@ -3642,6 +3774,7 @@ export default function Settings() {
       case "rss_feeds":        return <RssSettings />;
       case "restart_services": return <RestartServices />;
       case "permissions":      return <PermissionsSettings currentRole={currentRole} />;
+      case "wifi":             return <WifiSettings />;
       case "oauth":            return <OAuthSettings />;
       case "tunnel":           return <TunnelSettings />;
       case "updates":          return <UpdateSettings />;

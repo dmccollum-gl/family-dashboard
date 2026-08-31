@@ -1512,8 +1512,9 @@ function WifiSettings() {
   const [manual,   setManual]   = useState(false);
   const [confirm,  setConfirm]  = useState(false);
   const [applying, setApplying] = useState(false);
-  const [msg,      setMsg]      = useState(null);
+  const [result,   setResult]   = useState(null);   // {state, target, ssid?, prev?}
   const [error,    setError]    = useState(null);
+  const pollRef = useRef(null);
 
   const loadStatus = useCallback(() => {
     api.get("/api/settings/wifi").then(r => setStatus(r.data)).catch(() => setStatus(null));
@@ -1525,20 +1526,54 @@ function WifiSettings() {
       .catch(() => setNetworks([]))
       .finally(() => setScanning(false));
   }, []);
+  const stopPoll = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
   useEffect(() => { loadStatus(); scan(); }, [loadStatus, scan]);
+  useEffect(() => () => stopPoll(), [stopPoll]);
 
   const selected  = networks.find(n => n.ssid === ssid);
   const needsPass = manual || (selected && selected.security && selected.security !== "none");
   const canApply  = ssid.trim() && (!needsPass || password);
 
   const doApply = async () => {
-    setConfirm(false); setApplying(true); setMsg(null); setError(null);
+    setConfirm(false); setApplying(true); setError(null);
+    const target = ssid.trim();
+    const prev   = status?.ssid || null;
     try {
-      await api.post("/api/settings/wifi", { ssid: ssid.trim(), password });
-      setMsg(`Switching to "${ssid.trim()}"… If this device is on that network you may lose this page for a minute — reconnect on the new network. If the password is wrong, it falls back to the current network automatically.`);
+      await api.post("/api/settings/wifi", { ssid: target, password });
     } catch (e) {
       setError(e?.response?.data?.detail || "Could not start the WiFi change.");
-    } finally { setApplying(false); }
+      setApplying(false);
+      return;
+    }
+    // Poll for the outcome. Best-effort: if THIS browser is on the old network,
+    // the switch drops our path to the Pi and the polls fail — which is itself a
+    // signal the switch is taking effect.
+    setResult({ state: "switching", target });
+    let elapsed = 0, fails = 0;
+    stopPoll();
+    pollRef.current = setInterval(async () => {
+      elapsed += 3;
+      try {
+        const r = await api.get("/api/settings/wifi");
+        fails = 0;
+        setStatus(r.data);
+        const s = r.data;
+        if (s.connected && s.ssid === target) {
+          setResult({ state: "success", ssid: s.ssid }); setApplying(false); stopPoll();
+        } else if (s.type === "ethernet") {
+          setResult({ state: "ethernet", target }); setApplying(false); stopPoll();
+        } else if (s.connected && s.ssid && s.ssid !== target && elapsed >= 15) {
+          setResult({ state: "fallback", target, ssid: s.ssid }); setApplying(false); stopPoll();
+        }
+      } catch {
+        if (++fails >= 3) {
+          setResult({ state: "unreachable", target, prev }); setApplying(false); stopPoll();
+        }
+      }
+      if (elapsed >= 60) { setApplying(false); stopPoll(); }
+    }, 3000);
   };
 
   return (
@@ -1556,8 +1591,36 @@ function WifiSettings() {
         </Typography>
       </Alert>
 
-      {msg   && <Alert severity="info"  onClose={() => setMsg(null)}>{msg}</Alert>}
       {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
+
+      {result?.state === "switching" && (
+        <Alert severity="info" icon={<CircularProgress size={18} />}>
+          Switching to “{result.target}” — confirming the connection…
+        </Alert>
+      )}
+      {result?.state === "success" && (
+        <Alert severity="success" onClose={() => setResult(null)}>
+          Connected to <strong>{result.ssid}</strong>. ✓
+        </Alert>
+      )}
+      {result?.state === "ethernet" && (
+        <Alert severity="success" onClose={() => setResult(null)}>
+          WiFi settings saved. The device is on Ethernet, so the WiFi link will be used if Ethernet is unplugged.
+        </Alert>
+      )}
+      {result?.state === "fallback" && (
+        <Alert severity="warning" onClose={() => setResult(null)}>
+          Couldn't join “{result.target}” — likely a wrong password. The device fell back to{" "}
+          <strong>{result.ssid}</strong>, so it's still online.
+        </Alert>
+      )}
+      {result?.state === "unreachable" && (
+        <Alert severity="warning" onClose={() => setResult(null)}>
+          Can't reach the device from here anymore. If this browser was on “{result.prev || "the old network"}”,
+          the switch to <strong>{result.target}</strong> probably worked — reconnect on that network and refresh.
+          If it stayed reachable elsewhere, the switch may have failed and it kept the old network.
+        </Alert>
+      )}
 
       {!manual && (
         <>

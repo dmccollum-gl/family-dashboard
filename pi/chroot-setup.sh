@@ -189,6 +189,7 @@ dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dashboard-backend
 dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl start cloudflared
 dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop cloudflared
 dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cloudflared
+dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/update.sh
 SUDOERS
 chmod 440 /etc/sudoers.d/dashboard-setup
 

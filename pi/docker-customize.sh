@@ -110,6 +110,16 @@ mkdir -p "$MNT/opt/dashboard/backend"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' \
   /app/backend/ "$MNT/opt/dashboard/backend/"
 
+# Stage the updater so this pre-installed image can still update from GitHub.
+# update.sh git-bootstraps /opt/dashboard on its first run (it has no .git yet),
+# then pulls the rest of pi/ + runs setup.sh. So all install types are updatable.
+if [ -f /update.sh ]; then
+  mkdir -p "$MNT/opt/dashboard/pi"
+  cp /update.sh "$MNT/opt/dashboard/pi/update.sh"
+  chmod +x "$MNT/opt/dashboard/pi/update.sh"
+  info "Staged /opt/dashboard/pi/update.sh for self-update."
+fi
+
 # Copy pre-built React frontend if present
 if [ -d /app/frontend-dist ] && [ "$(ls -A /app/frontend-dist 2>/dev/null)" ]; then
   mkdir -p "$MNT/opt/dashboard/frontend-dist"

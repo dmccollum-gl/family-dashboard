@@ -186,18 +186,22 @@ def whoami(request: Request, db: Session = Depends(get_db)):
     Returns {authenticated: false} rather than 401 so the UI can render a
     signed-out state without treating it as an error.
     """
+    # owner_exists tells the UI whether we're still in first-time setup, so the
+    # OAuth + FQDN/tunnel setup tabs can be shown before anyone can log in.
+    owner_exists = db.query(UserPrefs).filter(UserPrefs.role == "owner").count() > 0
     email = request.session.get("email")
     if not email:
-        return {"authenticated": False}
+        return {"authenticated": False, "owner_exists": owner_exists}
     user = db.get(UserPrefs, email)
     if not user or user.blocked:
         request.session.clear()
-        return {"authenticated": False}
+        return {"authenticated": False, "owner_exists": owner_exists}
     return {
         "authenticated": True,
         "email":         user.email,
         "name":          user.display_name or "",
         "role":          user.role or "user",
+        "owner_exists":  owner_exists,
     }
 
 

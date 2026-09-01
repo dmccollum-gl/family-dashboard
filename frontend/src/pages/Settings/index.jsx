@@ -3750,6 +3750,7 @@ export default function Settings() {
   const [currentRole,     setCurrentRole]     = useState(getStoredRole);
   const [permissions,     setPermissions]     = useState({ admin: [], user: ["family_calendars"] });
   const [oauthConfigured, setOauthConfigured] = useState(true);
+  const [ownerExists,     setOwnerExists]     = useState(true);
   const [tab,             setTab]             = useState("my_account");
 
   // Source of truth for identity is the server session, not localStorage.
@@ -3757,6 +3758,7 @@ export default function Settings() {
   useEffect(() => {
     api.get("/api/auth/me")
       .then(res => {
+        setOwnerExists(res.data.owner_exists !== false);
         if (res.data.authenticated) {
           const u = { ...(getStoredUser() || {}), email: res.data.email, name: res.data.name };
           setCurrentUser(u); storeUser(u);
@@ -3813,9 +3815,11 @@ export default function Settings() {
 
     const admin = [
       isAdminOrOwner                  && { value: "permissions", label: "Permissions",        icon: <SecurityIcon fontSize="small" /> },
-      (isOwner || !oauthConfigured)   && { value: "oauth",       label: "OAuth / Google",     icon: <LockIcon fontSize="small" /> },
+      (isOwner || !oauthConfigured || !ownerExists) && { value: "oauth",  label: "OAuth / Google",     icon: <LockIcon fontSize="small" /> },
       isOwner                         && { value: "wifi",        label: "WiFi",               icon: <WifiIcon fontSize="small" /> },
-      isOwner                         && { value: "tunnel",      label: "FQDN Setup",         icon: <RouterIcon fontSize="small" /> },
+      // FQDN/tunnel setup must be reachable before the first login (Google needs
+      // the tunnel's FQDN as an authorized origin), so show it during bootstrap.
+      (isOwner || !ownerExists)       && { value: "tunnel",      label: "FQDN Setup",         icon: <RouterIcon fontSize="small" /> },
       isOwner                         && { value: "updates",     label: "Updates",            icon: <SystemUpdateAltIcon fontSize="small" /> },
       isOwner                         && { value: "ssh",         label: "SSH Access",         icon: <VpnKeyIcon fontSize="small" /> },
       isOwner                         && { value: "terminal",    label: "Terminal",           icon: <TerminalIcon fontSize="small" /> },
@@ -3824,7 +3828,7 @@ export default function Settings() {
     ].filter(Boolean);
 
     return { userTabs: user, adminTabs: admin };
-  }, [canSee, isAdminOrOwner, isOwner, oauthConfigured]);
+  }, [canSee, isAdminOrOwner, isOwner, oauthConfigured, ownerExists]);
 
   const renderContent = () => {
     switch (tab) {

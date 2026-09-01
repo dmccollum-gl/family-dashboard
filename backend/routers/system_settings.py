@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 import json, subprocess, threading, time as _time
 
-from auth_deps import require_admin, require_owner
+from auth_deps import require_admin, require_owner, require_owner_or_bootstrap
 
 router = APIRouter()
 
@@ -54,7 +54,7 @@ def get_oauth_config():
 
 
 @router.put("/oauth")
-def save_oauth_config(body: dict, _user=Depends(require_owner)):
+def save_oauth_config(body: dict, _user=Depends(require_owner_or_bootstrap)):
     updates = {}
     if body.get("client_id"):
         updates["GOOGLE_CLIENT_ID"] = body["client_id"]
@@ -410,7 +410,7 @@ def get_tunnel():
 
 
 @router.put("/tunnel")
-def save_tunnel(body: dict, _user=Depends(require_owner)):
+def save_tunnel(body: dict, _user=Depends(require_owner_or_bootstrap)):
     updates = {}
     if body.get("clear"):
         updates["tunnel_token"] = ""
@@ -422,7 +422,7 @@ def save_tunnel(body: dict, _user=Depends(require_owner)):
 
 
 @router.post("/tunnel/{action}")
-def control_tunnel(action: str, _user=Depends(require_owner)):
+def control_tunnel(action: str, _user=Depends(require_owner_or_bootstrap)):
     if action not in ("start", "stop", "restart"):
         raise HTTPException(status_code=400, detail="Invalid action. Use start, stop, or restart.")
     threading.Thread(
@@ -438,7 +438,7 @@ def control_tunnel(action: str, _user=Depends(require_owner)):
 # ── FQDN auto-detection ───────────────────────────────────────────────────────
 
 @router.get("/fqdn/detect")
-def detect_fqdn(_user=Depends(require_owner)):
+def detect_fqdn(_user=Depends(require_owner_or_bootstrap)):
     """Try to detect the Pi's public hostname from Tailscale or Cloudflare Tunnel."""
     import shutil, json as _json, base64 as _b64
 
@@ -488,7 +488,7 @@ def _cf_hdrs(token: str) -> dict:
 
 
 @router.get("/cloudflare/credentials")
-def cf_get_credentials(_user=Depends(require_owner)):
+def cf_get_credentials(_user=Depends(require_owner_or_bootstrap)):
     """Return stored Cloudflare credentials for pre-filling the UI."""
     cfg = _read_config()
     return {
@@ -498,7 +498,7 @@ def cf_get_credentials(_user=Depends(require_owner)):
 
 
 @router.post("/cloudflare/verify")
-def cf_verify(body: dict, _user=Depends(require_owner)):
+def cf_verify(body: dict, _user=Depends(require_owner_or_bootstrap)):
     """Verify a Cloudflare API token and list zones for the given account."""
     import httpx as _httpx
 
@@ -574,7 +574,7 @@ def cf_verify(body: dict, _user=Depends(require_owner)):
 
 
 @router.post("/cloudflare/setup")
-def cf_setup(body: dict, _user=Depends(require_owner)):
+def cf_setup(body: dict, _user=Depends(require_owner_or_bootstrap)):
     """
     Full Cloudflare tunnel setup:
       0. Tear down any previously-created tunnel + DNS record
@@ -795,7 +795,7 @@ def cf_setup(body: dict, _user=Depends(require_owner)):
 
 
 @router.get("/cloudflare/tunnels")
-def cf_list_tunnels(_user=Depends(require_owner)):
+def cf_list_tunnels(_user=Depends(require_owner_or_bootstrap)):
     """List all non-deleted Cloudflare Tunnels for the stored account."""
     import httpx as _httpx
 
@@ -843,7 +843,7 @@ def cf_list_tunnels(_user=Depends(require_owner)):
 
 
 @router.delete("/cloudflare/tunnel/{tunnel_id}")
-def cf_delete_tunnel(tunnel_id: str, _user=Depends(require_owner)):
+def cf_delete_tunnel(tunnel_id: str, _user=Depends(require_owner_or_bootstrap)):
     """Delete a Cloudflare Tunnel (and its DNS record + local token if it's the Pi's tunnel)."""
     import httpx as _httpx
 

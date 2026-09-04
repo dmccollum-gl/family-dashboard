@@ -107,7 +107,19 @@ fi
 # -- Copy app source into chroot -----------------------------------------------
 info "Copying application files..."
 mkdir -p "$MNT/opt/dashboard/backend"
-rsync -a --exclude '__pycache__' --exclude '*.pyc' \
+# Exclude the developer's runtime + secret files. They must never be baked into
+# a distributable image: .env holds OAuth client secrets + the session key,
+# dashboard.db holds personal accounts and Google tokens, and the live config is
+# device-specific. Each is created fresh on the Pi at setup time (SECRET_KEY is
+# generated, dashboard_config.example.json is copied to dashboard_config.json).
+# Excluding them also sidesteps the "Resource deadlock avoided" rsync error when
+# these files are OneDrive on-demand placeholders read through Docker's mount.
+rsync -a \
+  --exclude '__pycache__' --exclude '*.pyc' \
+  --exclude '.env' \
+  --exclude 'dashboard.db' --exclude 'dashboard.db-wal' --exclude 'dashboard.db-shm' \
+  --exclude 'dashboard_config.json' \
+  --exclude 'venv' --exclude '.venv' \
   /app/backend/ "$MNT/opt/dashboard/backend/"
 
 # Stage the updater so this pre-installed image can still update from GitHub.

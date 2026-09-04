@@ -71,8 +71,16 @@ step "Installing application files to $APP_DIR"
 mkdir -p "$APP_DIR"
 
 if [ -d "$PROJECT_DIR/backend" ]; then
-  # Running from a local clone
-  rsync -a --exclude '__pycache__' --exclude '*.pyc' \
+  # Running from a local clone. Never overwrite the device's own runtime + secret
+  # files: .env (OAuth secrets + session key), dashboard.db (accounts + tokens),
+  # and the live dashboard_config.json. These are preserved across updates and,
+  # when absent, created fresh later in this script.
+  rsync -a \
+    --exclude '__pycache__' --exclude '*.pyc' \
+    --exclude '.env' \
+    --exclude 'dashboard.db' --exclude 'dashboard.db-wal' --exclude 'dashboard.db-shm' \
+    --exclude 'dashboard_config.json' \
+    --exclude 'venv' --exclude '.venv' \
     "$PROJECT_DIR/backend/" "$APP_DIR/backend/"
   info "Backend copied from local clone."
 elif [ -d "$APP_DIR/backend" ]; then

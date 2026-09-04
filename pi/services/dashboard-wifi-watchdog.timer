@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Dashboard WiFi watchdog periodically
+
+[Timer]
+# First check 2 min after boot (lets dashboard-setup.service settle the radio),
+# then every 60s. A sustained outage triggers the recovery hotspot.
+OnBootSec=120
+OnUnitActiveSec=60
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

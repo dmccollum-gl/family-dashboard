@@ -25,8 +25,18 @@ def _guard_reconfigure(request: Request, db: Session):
     During first-time setup (no .configured flag yet) nobody is signed in, so
     the wizard endpoints stay open. After that, an exposed device must not let
     a stranger rewrite WiFi or reboot it.
+
+    Recovery exception: if the device is currently serving the "Dashboard-Setup"
+    hotspot, its WiFi is down and the ONLY way to reach it is over that AP. Owner
+    login can't help here -- it needs Google OAuth, which needs the very internet
+    that's missing -- so a device that loses its network would be unreachable
+    forever. While the hotspot is up we let WiFi be reconfigured without a login;
+    physical proximity to the (short-lived, recovery-only) hotspot is the
+    authorization, exactly as it is during first-time setup.
     """
     if _on_pi() and os.path.exists(CONFIGURED_FLAG):
+        if _hotspot_active():
+            return
         email = request.session.get("email")
         user  = db.get(UserPrefs, email) if email else None
         if not user or (user.role or "user") != "owner":

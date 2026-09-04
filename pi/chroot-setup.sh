@@ -177,8 +177,11 @@ chown "$DASH_USER:$DASH_USER" "$APP_DIR/cloudflared-run.sh"
 # -- Setup scripts (captive portal + network apply helper) --------------------
 info "Installing setup scripts..."
 cp /tmp/setup-mode.sh      "$APP_DIR/setup-mode.sh"
+cp /tmp/hotspot-up.sh      "$APP_DIR/hotspot-up.sh"
+cp /tmp/wifi-watchdog.sh   "$APP_DIR/wifi-watchdog.sh"
 cp /tmp/pi-setup-apply.sh  "$APP_DIR/pi-setup-apply.sh"
-chmod +x "$APP_DIR/setup-mode.sh" "$APP_DIR/pi-setup-apply.sh"
+chmod +x "$APP_DIR/setup-mode.sh" "$APP_DIR/hotspot-up.sh" \
+         "$APP_DIR/wifi-watchdog.sh" "$APP_DIR/pi-setup-apply.sh"
 
 # -- sudoers rules: setup helper + service restarts ---------------------------
 info "Adding sudoers rules..."
@@ -193,8 +196,10 @@ dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/update.sh
 SUDOERS
 chmod 440 /etc/sudoers.d/dashboard-setup
 
-# -- Copy setup service --------------------------------------------------------
-cp /tmp/dashboard-setup.service /etc/systemd/system/dashboard-setup.service
+# -- Copy setup service + WiFi-recovery watchdog -------------------------------
+cp /tmp/dashboard-setup.service          /etc/systemd/system/dashboard-setup.service
+cp /tmp/dashboard-wifi-watchdog.service  /etc/systemd/system/dashboard-wifi-watchdog.service
+cp /tmp/dashboard-wifi-watchdog.timer    /etc/systemd/system/dashboard-wifi-watchdog.timer
 
 # -- cloudflared systemd service -----------------------------------------------
 info "Installing cloudflared.service..."
@@ -261,6 +266,9 @@ echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/10-dashboard.conf
 # -- systemd services ----------------------------------------------------------
 info "Enabling systemd services..."
 systemctl enable dashboard-setup.service
+# Runtime WiFi-recovery watchdog: the timer runs the watchdog service on a
+# schedule, so a device that loses WiFi after boot falls back to the hotspot.
+systemctl enable dashboard-wifi-watchdog.timer
 systemctl enable dashboard-backend.service
 # Statically enable getty@tty1 so systemd-getty-generator doesn't need to
 # discover it at runtime -- required on Pi OS Bookworm with vc4-kms-v3d where

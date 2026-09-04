@@ -49,6 +49,7 @@ apt-get install -y -qq \
   sqlite3 \
   fonts-dejavu-core fonts-liberation \
   cec-utils \
+  iw wireless-regdb dnsmasq-base \
   nginx git curl wget ca-certificates
 
 # -- Create user ---------------------------------------------------------------
@@ -96,6 +97,30 @@ else
 fi
 
 chown -R "$DASH_USER:$DASH_USER" "$APP_DIR"
+
+# -- Setup + WiFi-recovery scripts --------------------------------------------
+# Copy the captive-portal setup scripts and the WiFi recovery watchdog into
+# /opt/dashboard/ (the same layout the image builder uses). This is what lets a
+# configured device "fall back to the Dashboard-Setup hotspot when WiFi is down"
+# -- and it installs even on devices set up before this feature existed, so an
+# in-place update gives them the recovery path.
+step "Installing setup + WiFi-recovery scripts"
+for s in setup-mode.sh hotspot-up.sh wifi-watchdog.sh pi-setup-apply.sh; do
+  if [ -f "$SCRIPT_DIR/$s" ]; then
+    cp "$SCRIPT_DIR/$s" "$APP_DIR/$s"
+    chmod +x "$APP_DIR/$s"
+    chown "$DASH_USER:$DASH_USER" "$APP_DIR/$s"
+  else
+    warn "$s not found in $SCRIPT_DIR -- skipping."
+  fi
+done
+
+# WiFi regulatory domain -- the kernel refuses AP mode without a country code.
+if command -v raspi-config >/dev/null 2>&1; then
+  raspi-config nonint do_wifi_country US 2>/dev/null || true
+else
+  echo "REGDOMAIN=US" > /etc/default/crda 2>/dev/null || true
+fi
 
 # -- Python venv ---------------------------------------------------------------
 step "Setting up Python virtual environment"
@@ -266,6 +291,8 @@ dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cloudflared
 dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/update.sh
 dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/wifi-connect.sh
 dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/wifi-connect.sh *
+dashboard ALL=(ALL) NOPASSWD: /opt/dashboard/pi-setup-apply.sh
+dashboard ALL=(ALL) NOPASSWD: /opt/dashboard/pi-setup-apply.sh *
 dashboard ALL=(ALL) NOPASSWD: /sbin/reboot
 dashboard ALL=(ALL) NOPASSWD: /sbin/shutdown
 dashboard ALL=(ALL) NOPASSWD: /usr/sbin/chpasswd
@@ -282,7 +309,9 @@ step "Installing systemd services"
 SVC_SRC="$SCRIPT_DIR/services"
 [ -d "$SVC_SRC" ] || SVC_SRC="$APP_DIR/services"
 
-for svc in dashboard-backend.service dashboard-display.service; do
+for svc in dashboard-backend.service dashboard-display.service \
+           dashboard-setup.service \
+           dashboard-wifi-watchdog.service dashboard-wifi-watchdog.timer; do
   if [ -f "$SCRIPT_DIR/services/$svc" ]; then
     cp "$SCRIPT_DIR/services/$svc" /etc/systemd/system/
   else
@@ -290,8 +319,12 @@ for svc in dashboard-backend.service dashboard-display.service; do
   fi
 done
 systemctl daemon-reload
-systemctl enable dashboard-backend.service  2>/dev/null || true
-systemctl enable dashboard-display.service  2>/dev/null || true
+systemctl enable dashboard-backend.service       2>/dev/null || true
+systemctl enable dashboard-display.service       2>/dev/null || true
+# Boot-time hotspot check + the runtime WiFi-recovery watchdog (the timer runs
+# the watchdog service; the service itself is triggered by the timer).
+systemctl enable dashboard-setup.service         2>/dev/null || true
+systemctl enable dashboard-wifi-watchdog.timer   2>/dev/null || true
 
 # -- Pi hardware config --------------------------------------------------------
 step "Configuring Pi firmware"

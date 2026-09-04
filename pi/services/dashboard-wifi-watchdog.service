@@ -1,0 +1,11 @@
+[Unit]
+Description=Dashboard WiFi watchdog (recovery hotspot fallback)
+After=NetworkManager.service dashboard-setup.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dashboard/wifi-watchdog.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dashboard-wifi-watchdog

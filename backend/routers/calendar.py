@@ -42,13 +42,6 @@ def _now_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
-# Consecutive refresh failures per user (in-memory). After _MAX_REFRESH_FAILURES
-# strikes the stored token is deleted so the user is signed out and must sign in
-# again, instead of looping forever on a dead token. Reset on any success.
-_refresh_failures: dict[str, int] = {}
-_MAX_REFRESH_FAILURES = 3
-
-
 def _clear_user_token(email: str) -> None:
     """Delete a user's stored Google token — logs them out of calendar access."""
     db = SessionLocal()
@@ -63,20 +56,18 @@ def _clear_user_token(email: str) -> None:
         db.close()
 
 
-async def _note_refresh_failure(email: str) -> None:
-    """Record a failed refresh; after 3 strikes, delete the dead token."""
-    n = _refresh_failures.get(email, 0) + 1
-    _refresh_failures[email] = n
-    if n >= _MAX_REFRESH_FAILURES:
-        await asyncio.to_thread(_clear_user_token, email)
-        _refresh_failures.pop(email, None)
-
-
 async def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
     """Return a valid access token, refreshing via refresh_token if needed.
 
-    If the refresh fails _MAX_REFRESH_FAILURES times in a row, the stored token
-    is deleted (the user is signed out) rather than retried indefinitely.
+    The stored token is deleted (the user is signed out) ONLY when Google
+    definitively rejects the refresh token with error="invalid_grant" — i.e.
+    the refresh token is revoked, expired, or otherwise permanently dead.
+
+    Every other failure (network error, timeout, 5xx, rate-limit, clock skew,
+    or a 200 with no access_token) is treated as TRANSIENT: we leave the stored
+    token untouched and return None so the next tick simply retries. This
+    prevents a temporary outage — or a Pi Zero with a drifted clock — from
+    logging users out and forcing them to sign in again.
     """
     now_ms    = _now_ms()
     buffer_ms = 5 * 60 * 1000
@@ -101,14 +92,23 @@ async def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
                 "client_secret": client_secret,
             })
         if res.status_code != 200:
-            await _note_refresh_failure(user.email)
+            # Only a definitive invalid_grant means the refresh token is dead.
+            # Anything else (5xx, 429, transient 4xx) is retried, not deleted.
+            err = ""
+            try:
+                err = (res.json() or {}).get("error", "")
+            except Exception:
+                pass
+            if res.status_code == 400 and err == "invalid_grant":
+                await asyncio.to_thread(_clear_user_token, user.email)
             return None
         td          = res.json()
         new_token   = td.get("access_token")
         expires_in  = td.get("expires_in", 3600)
         expiry_ms   = int((datetime.now(timezone.utc).timestamp() + expires_in) * 1000)
         if not new_token:
-            await _note_refresh_failure(user.email)
+            # 200 with no token is unexpected but not proof of a dead grant —
+            # keep the refresh token and retry next tick.
             return None
 
         def _update_db():
@@ -123,10 +123,9 @@ async def _get_valid_token(user: UserPrefs, env: dict) -> str | None:
                 db.close()
 
         await asyncio.to_thread(_update_db)
-        _refresh_failures.pop(user.email, None)   # success → clear the strike count
         return new_token
     except Exception:
-        await _note_refresh_failure(user.email)
+        # Network error / timeout — transient. Keep the token, retry next tick.
         return None
 
 

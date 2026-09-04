@@ -130,13 +130,19 @@ else
 fi
 
 # Copy service files and scripts into the chroot's /tmp for the setup script
-cp /services/dashboard-backend.service  "$MNT/etc/systemd/system/"
-cp /services/dashboard-display.service  "$MNT/etc/systemd/system/"
-cp /services/dashboard-setup.service    "$MNT/tmp/dashboard-setup.service"
-cp /chroot-setup.sh                     "$MNT/tmp/chroot-setup.sh"
-cp /setup-mode.sh                       "$MNT/tmp/setup-mode.sh"
-cp /pi-setup-apply.sh                   "$MNT/tmp/pi-setup-apply.sh"
-chmod +x "$MNT/tmp/chroot-setup.sh" "$MNT/tmp/setup-mode.sh" "$MNT/tmp/pi-setup-apply.sh"
+cp /services/dashboard-backend.service       "$MNT/etc/systemd/system/"
+cp /services/dashboard-display.service       "$MNT/etc/systemd/system/"
+cp /services/dashboard-setup.service         "$MNT/tmp/dashboard-setup.service"
+cp /services/dashboard-wifi-watchdog.service "$MNT/tmp/dashboard-wifi-watchdog.service"
+cp /services/dashboard-wifi-watchdog.timer   "$MNT/tmp/dashboard-wifi-watchdog.timer"
+cp /chroot-setup.sh                          "$MNT/tmp/chroot-setup.sh"
+cp /setup-mode.sh                            "$MNT/tmp/setup-mode.sh"
+cp /hotspot-up.sh                            "$MNT/tmp/hotspot-up.sh"
+cp /wifi-watchdog.sh                         "$MNT/tmp/wifi-watchdog.sh"
+cp /pi-setup-apply.sh                        "$MNT/tmp/pi-setup-apply.sh"
+chmod +x "$MNT/tmp/chroot-setup.sh" "$MNT/tmp/setup-mode.sh" \
+         "$MNT/tmp/hotspot-up.sh" "$MNT/tmp/wifi-watchdog.sh" \
+         "$MNT/tmp/pi-setup-apply.sh"
 
 # -- Copy downloaded wheels into chroot for offline install -------------------
 if [ "$CONTAINER_ARCH" = "aarch64" ] || [ "$CONTAINER_ARCH" = "arm64" ]; then

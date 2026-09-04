@@ -123,6 +123,8 @@ DOCKER_ARGS=(
   -v "${SCRIPT_DIR}/chroot-setup.sh:/chroot-setup.sh:ro"
   -v "${SCRIPT_DIR}/docker-customize.sh:/docker-customize.sh:ro"
   -v "${SCRIPT_DIR}/setup-mode.sh:/setup-mode.sh:ro"
+  -v "${SCRIPT_DIR}/hotspot-up.sh:/hotspot-up.sh:ro"
+  -v "${SCRIPT_DIR}/wifi-watchdog.sh:/wifi-watchdog.sh:ro"
   -v "${SCRIPT_DIR}/pi-setup-apply.sh:/pi-setup-apply.sh:ro"
   -v "${SCRIPT_DIR}/update.sh:/update.sh:ro"
 )

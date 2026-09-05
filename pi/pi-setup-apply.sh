@@ -216,19 +216,42 @@ hostnamectl set-hostname "$HOSTNAME" 2>/dev/null || true
 
 if [ -n "$SSID" ]; then
   echo "[setup-apply] Configuring WiFi: $SSID"
+  # The hotspot must never autoconnect: on a single-radio Pi that would hold
+  # wlan0 in AP mode on boot and starve the real WiFi (device stuck on hotspot).
+  # It comes up only when explicitly started by setup-mode/watchdog.
+  nmcli connection modify "$HOTSPOT_CON" connection.autoconnect no 2>/dev/null || true
+
+  # Prefer the real WiFi over the hotspot when NetworkManager decides what to
+  # auto-activate on boot.
   nmcli connection delete "$WIFI_CON" 2>/dev/null || true
   NM_ADD_OUT=$(nmcli connection add type wifi ifname wlan0 con-name "$WIFI_CON" \
       ssid "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PASSWORD" \
-      connection.autoconnect yes ipv4.method auto 2>&1)
+      connection.autoconnect yes connection.autoconnect-priority 10 \
+      ipv4.method auto 2>&1)
   NM_ADD_RC=$?
   echo "[setup-apply] nmcli add rc=${NM_ADD_RC} out=${NM_ADD_OUT}" >> /opt/dashboard/apply-debug.log 2>/dev/null || true
   if [ $NM_ADD_RC -eq 0 ]; then
+    # Tear the AP fully down and give wlan0 time to leave AP mode before we ask
+    # it to associate as a station -- 1s was too short and the join could fail.
     nmcli connection down "$HOTSPOT_CON" 2>/dev/null || true
-    sleep 1
-    if nmcli connection up "$WIFI_CON" 2>&1 | tee -a /opt/dashboard/apply-debug.log; then
+    nmcli device disconnect wlan0 2>/dev/null || true
+    sleep 4
+    nmcli device wifi rescan ifname wlan0 2>/dev/null || true
+    WIFI_OK=0
+    for attempt in 1 2 3; do
+      if nmcli connection up "$WIFI_CON" 2>&1 | tee -a /opt/dashboard/apply-debug.log; then
+        WIFI_OK=1
+        break
+      fi
+      echo "[setup-apply] WiFi attempt $attempt/3 failed; retrying in 5s..."
+      sleep 5
+    done
+    if [ "$WIFI_OK" = "1" ]; then
       echo "[setup-apply] WiFi activated."
     else
-      echo "[setup-apply] WARNING: WiFi failed -- will reboot anyway."
+      # Not fatal: autoconnect=yes means NetworkManager keeps trying after the
+      # reboot, and the hotspot no longer steals the radio.
+      echo "[setup-apply] WARNING: WiFi did not come up now -- will retry after reboot."
     fi
   else
     echo "[setup-apply] ERROR: nmcli add failed -- will reboot anyway."

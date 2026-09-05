@@ -46,11 +46,16 @@ if ! nmcli connection add \
     ssid         "$HOTSPOT_SSID" \
     802-11-wireless.mode ap      \
     802-11-wireless.band bg      \
+    connection.autoconnect no    \
     ipv4.method  shared          \
     ipv4.addresses "$HOTSPOT_IP"; then
   log "ERROR: nmcli connection add failed -- cannot create hotspot."
   exit 1
 fi
+# autoconnect=no is critical on a single-radio Pi: the AP must come up ONLY when
+# we explicitly bring it up here (setup / watchdog). If it autoconnected on boot
+# it would hold wlan0 in AP mode and starve the real WiFi -- the device would be
+# stuck on the hotspot even with a valid saved network.
 
 log "Hotspot connection created. Bringing it up..."
 for attempt in 1 2 3 4 5; do

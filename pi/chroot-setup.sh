@@ -407,10 +407,19 @@ sed -i 's/^#\?Storage=.*/Storage=persistent/' /etc/systemd/journald.conf 2>/dev/
 # No credentials are baked into the image  --  each customer enters their own.
 
 # -- Write example config if no config present --------------------------------
+# The live config is no longer copied from the build host (it would leak the
+# developer's settings), so create it here from the example. This runs AFTER the
+# `chown -R` above, so the new file would be root-owned and the backend (running
+# as the dashboard user) could not write it -- hand it back to dashboard.
 if [ ! -f "$APP_DIR/backend/dashboard_config.json" ]; then
-  cp "$APP_DIR/backend/dashboard_config.example.json" \
-     "$APP_DIR/backend/dashboard_config.json" 2>/dev/null || true
+  if [ -f "$APP_DIR/backend/dashboard_config.example.json" ]; then
+    cp "$APP_DIR/backend/dashboard_config.example.json" \
+       "$APP_DIR/backend/dashboard_config.json"
+  else
+    echo '{}' > "$APP_DIR/backend/dashboard_config.json"
+  fi
 fi
+chown "$DASH_USER:$DASH_USER" "$APP_DIR/backend/dashboard_config.json"
 
 # -- WiFi regulatory domain (required for AP mode on Pi Zero 2 W) --------------
 # Without a country code the kernel refuses to start the AP radio.
@@ -428,5 +437,10 @@ touch /etc/cloud/cloud-init.disabled
 echo "dashboard-setup" > /etc/hostname
 sed -i 's/127\.0\.1\.1.*/127.0.1.1\tdashboard-setup/' /etc/hosts 2>/dev/null || \
   echo "127.0.1.1 dashboard-setup" >> /etc/hosts
+
+# -- Final ownership sweep -----------------------------------------------------
+# Anything created after the earlier `chown -R` (config, helper scripts, etc.)
+# must still belong to the dashboard user so the backend can read/write it.
+chown -R "$DASH_USER:$DASH_USER" "$APP_DIR"
 
 info "Chroot setup finished."

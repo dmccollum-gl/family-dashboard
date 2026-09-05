@@ -13,6 +13,25 @@ CONFIGURED_FLAG="/opt/dashboard/.configured"
 HOTSPOT_CON="dashboard-hotspot"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+# -- Per-device session secret ------------------------------------------------
+# The image ships without a .env (baking one would share a signing key across
+# every device flashed from it). This runs as root before dashboard-backend
+# starts, so generate a unique SECRET_KEY on first boot if one isn't set yet.
+# Idempotent: only writes when missing or still the placeholder, so logins
+# survive reboots.
+ENV_FILE="/opt/dashboard/backend/.env"
+if ! grep -q '^SECRET_KEY=.\+' "$ENV_FILE" 2>/dev/null || grep -q '^SECRET_KEY=change-me' "$ENV_FILE" 2>/dev/null; then
+  SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))' 2>/dev/null)"
+  if [ -n "$SECRET" ]; then
+    touch "$ENV_FILE"
+    sed -i '/^SECRET_KEY=/d' "$ENV_FILE" 2>/dev/null || true
+    echo "SECRET_KEY=$SECRET" >> "$ENV_FILE"
+    chown dashboard:dashboard "$ENV_FILE" 2>/dev/null || true
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
+    echo "[setup-mode] Generated a per-device session secret."
+  fi
+fi
+
 # -- Configured devices: give the real network a chance before falling back ---
 if [ -f "$CONFIGURED_FLAG" ]; then
   echo "[setup-mode] Configured flag exists. Waiting up to 30s for network..."

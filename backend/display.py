@@ -101,6 +101,13 @@ RSS_INTERVAL      = 60     # 1 min  — ticker cycles; content may update freque
 SETTINGS_INTERVAL = 30     # 30 sec — pick up admin-configured theme/view changes
 SYSINFO_INTERVAL  = 0.5    # 500 ms — CPU / RAM stats (fast /proc reads)
 
+# Timed events render full-width (maximises title space); when they overlap in
+# time they cover one another and the top layer rotates every EVENT_CYCLE_SECS
+# so each becomes readable in turn. Set by _draw_timegrid each render; read by
+# the main loop to re-render the cached grid once per cycle while overlaps exist.
+EVENT_CYCLE_SECS         = 5
+_timegrid_has_rotation   = False
+
 # ── colour palettes ──────────────────────────────────────────────────────────
 LIGHT = dict(
     bg        = (241, 245, 252),
@@ -1286,46 +1293,14 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             cur = cur.get("_container")
         return n
 
-    bounds_memo: dict = {}
-
     def _calc_bounds(ev: dict, day_bx: float):
-        """Pixel (x, width) for ev, inset within its container's own bounds
-        (recursively) if it spans across another event, or within the day
-        column's macro/sub-column slot if it's a background/root event.
+        """Full-width stacked layout: every event spans the whole day column so
+        its title gets the maximum readable width. Events that overlap in time
+        therefore cover one another; the draw-order rotation below cycles which
+        one is on top every EVENT_CYCLE_SECS so each becomes legible in turn."""
+        return (day_bx + _s(2), col_w - _s(4))
 
-        A container's own time/title live in a reserved left "spine" (see
-        _SPINE_FRACTION) that this never encroaches on — children only ever
-        get the width to the right of it, so a child can't be positioned
-        (by its own start time) directly over the container's label."""
-        key = id(ev)
-        if key in bounds_memo:
-            return bounds_memo[key]
-        col    = ev["_col"]
-        tot    = ev["_total"]
-        subcol = ev.get("_subcol", 0)
-        subtot = ev.get("_subtotal", 1)
-        container = ev.get("_container")
-        if container is None:
-            slot_x  = day_bx + _s(2)
-            slot_w  = col_w - _s(4)
-        else:
-            parent_x, parent_w = _calc_bounds(container, day_bx)
-            spine_w = parent_w * _SPINE_FRACTION
-            avail_x = parent_x + spine_w
-            avail_w = max(_s(10), parent_w - spine_w)
-            inset   = min(_s(6), avail_w * 0.15)
-            slot_x  = avail_x + inset
-            slot_w  = max(_s(10), avail_w - 2 * inset)
-        macro_w = slot_w / max(tot, 1)
-        sub_w   = macro_w / max(subtot, 1)
-        px = slot_x + col * macro_w + subcol * sub_w
-        result = (px, sub_w)
-        bounds_memo[key] = result
-        return result
-
-    has_children_ids = {
-        id(ev["_container"]) for ev in timed_evs if ev.get("_container") is not None
-    }
+    has_children_ids: set = set()   # no sub-column spines in full-width mode
 
     visible_evs = []
     for ev in timed_evs:
@@ -1340,18 +1315,54 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             continue
         visible_evs.append((ev, d, s_min, e_min))
 
-    # Draw background (root) events before whatever spans across them, so
-    # contained events always paint on top of their container.
-    visible_evs.sort(key=lambda t: _depth(t[0]))
+    # ── Full-width stacking + timed top-layer rotation ───────────────────────
+    # Group each day's events into overlap clusters (connected components by
+    # time overlap). Non-overlapping events are singletons and unaffected.
+    # Within a cluster of n, the "active" member advances every EVENT_CYCLE_SECS
+    # and is drawn LAST (on top); the others sit behind it. Over n*5 seconds
+    # every overlapping event takes its turn fully visible.
+    global _timegrid_has_rotation
+    cycle = int(time.time() // EVENT_CYCLE_SECS)
+    by_day: dict = {}
+    for tup in visible_evs:
+        by_day.setdefault(tup[1], []).append(tup)
 
-    for ev, d, s_min, e_min in visible_evs:
+    draw_order:  list = []
+    stacked_ids: dict = {}   # id(ev) -> (position, cluster_size) for the k/n badge
+    has_rotation = False
+    for d_key in by_day:
+        items = sorted(by_day[d_key], key=lambda t: (t[2], t[3]))
+        i = 0
+        while i < len(items):
+            cluster     = [items[i]]
+            cluster_end = items[i][3]
+            j = i + 1
+            while j < len(items) and items[j][2] < cluster_end:
+                cluster.append(items[j])
+                cluster_end = max(cluster_end, items[j][3])
+                j += 1
+            n = len(cluster)
+            if n > 1:
+                has_rotation = True
+                for pos, tup in enumerate(cluster):       # start-ordered 1..n
+                    stacked_ids[id(tup[0])] = (pos + 1, n)
+                ai = cycle % n
+                cluster = cluster[ai + 1:] + cluster[:ai + 1]   # active drawn last
+            draw_order.extend(cluster)
+            i = j
+    _timegrid_has_rotation = has_rotation
+
+    for ev, d, s_min, e_min in draw_order:
         ev_y = grid_top + (s_min - GRID_START * 60) / 60 * row_h
         ev_h = max(16, (e_min - s_min) / 60 * row_h - 2)
         bx   = x + LABEL_W + d * col_w
         slot_x, slot_w = _calc_bounds(ev, bx)
         ev_w   = max(_s(6), int(slot_w) - _s(2))
         ev_x   = int(slot_x)
-        nested = ev.get("_container") is not None
+        # In full-width mode a "stacked" event is one sharing its time slot with
+        # others; give it the layered look (drop shadow + light outline) so the
+        # top event reads as in front of the ones it's covering.
+        nested = id(ev) in stacked_ids
         if nested and int(ev_h) >= _s(4):
             # Drop shadow so an event layered on top of a spanning one reads
             # as "in front of it" rather than just another adjacent block.
@@ -1417,6 +1428,25 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
                           base_size=16, min_size=11, valign="top")
         surf.set_clip(prev_clip)
 
+        # Overlap indicator: a small "k/n" pill at the top-right shows this event
+        # is one of n sharing the slot (and which one), so the rotating top layer
+        # reads as intentional rather than flicker.
+        sinfo = stacked_ids.get(id(ev))
+        if sinfo and ev_w >= _s(46) and int(ev_h) >= _s(15):
+            pos, cnt = sinfo
+            bfnt   = _font(9, bold=True)
+            btxt   = bfnt.render(f"{pos}/{cnt}", True, (255, 255, 255))
+            bw, bh = btxt.get_size()
+            pill_w = bw + _s(6)
+            pill_h = bh + _s(2)
+            pill_x = ev_x + ev_w - pill_w - _s(4)
+            pill_y = ev_y + _s(3)
+            pill   = pygame.Surface((pill_w, pill_h), pygame.SRCALPHA)
+            pill.fill((0, 0, 0, 90))
+            pygame.draw.rect(pill, (0, 0, 0, 90), pill.get_rect(), border_radius=_s(3))
+            surf.blit(pill, (int(pill_x), int(pill_y)))
+            surf.blit(btxt, (int(pill_x + _s(3)), int(pill_y + _s(1))))
+
     # now-line is intentionally omitted here — drawn as an overlay in main()
     return allday_h
 
@@ -1462,6 +1492,11 @@ def _draw_nowline(screen: pygame.Surface, C: dict,
 def _draw_cardgrid(surf: pygame.Surface, C: dict, events_raw: list,
                    start: date, num_weeks: int,
                    x: int, y: int, w: int, h: int) -> None:
+    # Card (month / 2-week) views have no timed-event stacking, so clear the
+    # rotation flag — otherwise a leftover True from a timegrid view would make
+    # the main loop pointlessly re-render this grid every EVENT_CYCLE_SECS.
+    global _timegrid_has_rotation
+    _timegrid_has_rotation = False
     today  = date.today()
     cell_w = w // 7
     hdr_h  = _s(20)
@@ -1692,6 +1727,7 @@ def main() -> None:
         "sysinfo_ts":   -1.0,
         "weather_view": None,
         "expired":      [],     # list of expired user names
+        "cycle":        -1,     # EVENT_CYCLE_SECS bucket — rotates stacked events
     }
 
     # Grid area geometry (constant after init)
@@ -1772,6 +1808,7 @@ def main() -> None:
         now        = datetime.now()
         cur_minute = (now.hour, now.minute)
         cur_day    = now.date()
+        cur_cycle  = int(time.time() // EVENT_CYCLE_SECS)
         cur_theme  = _theme_name(snap_weather, theme_mode)
         C          = LIGHT if cur_theme == "light" else DARK
 
@@ -1791,7 +1828,8 @@ def main() -> None:
             anchor         != prev["anchor"]                   or
             snap_cal_ts    != prev["calendar_ts"]              or
             cur_day        != prev["day"]                      or  # midnight: headers change
-            frozenset(snap_expired) != frozenset(prev["expired"])  # token warning appeared/cleared
+            frozenset(snap_expired) != frozenset(prev["expired"]) or  # token warning appeared/cleared
+            (_timegrid_has_rotation and cur_cycle != prev["cycle"])   # rotate stacked events
         )
         # Footer has its own surface — CPU/RAM changes only trigger a footer redraw,
         # not a full calendar grid redraw.
@@ -1875,6 +1913,7 @@ def main() -> None:
             "sysinfo_ts":   snap_sysinfo_ts,
             "weather_view": cur_weather_view,
             "expired":      snap_expired,
+            "cycle":        cur_cycle,
         })
 
         clock.tick(2)   # 2 FPS — responsive enough for keyboard; CPU near-zero between dirty events

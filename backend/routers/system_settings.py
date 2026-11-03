@@ -1054,8 +1054,12 @@ def apply_update(_user=Depends(require_owner)):
                 "started":   datetime.now().isoformat(),
             }
         try:
+            # -n: never prompt for a password — fail fast with a clear error if
+            # the NOPASSWD sudoers rule is missing, instead of hanging on a
+            # terminal prompt. /bin/bash (absolute) matches the sudoers rule
+            # literally; a bare "bash" may resolve to /usr/bin/bash and not match.
             proc = subprocess.Popen(
-                ["sudo", "bash", str(update_script)],
+                ["sudo", "-n", "/bin/bash", str(update_script)],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
             )

@@ -63,10 +63,30 @@ NGINX
 /usr/sbin/nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
 echo "[setup-apply] nginx config updated."
 
-# sudoers: guarantee no-TTY requirement for dashboard sudo
+# sudoers: write the COMPLETE ruleset the web UI needs. This file previously
+# contained only the pi-setup-apply.sh rule, which clobbered the full ruleset
+# the image installs (chroot-setup.sh) -- so after first-time setup the device
+# could no longer run update.sh without a password and "Apply Update" failed
+# with "sudo: a password is required". Keep this in sync with the rules the
+# backend invokes (see setup.sh / chroot-setup.sh).
 cat > /etc/sudoers.d/dashboard-setup << 'SUDOERS'
 Defaults:dashboard !requiretty
 dashboard ALL=(ALL) NOPASSWD: /opt/dashboard/pi-setup-apply.sh
+dashboard ALL=(ALL) NOPASSWD: /opt/dashboard/pi-setup-apply.sh *
+dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/update.sh
+dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/wifi-connect.sh
+dashboard ALL=(ALL) NOPASSWD: /bin/bash /opt/dashboard/pi/wifi-connect.sh *
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dashboard-backend
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl start cloudflared
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop cloudflared
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cloudflared
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable ssh
+dashboard ALL=(ALL) NOPASSWD: /usr/bin/systemctl start ssh
+dashboard ALL=(ALL) NOPASSWD: /usr/sbin/useradd
+dashboard ALL=(ALL) NOPASSWD: /usr/sbin/usermod
+dashboard ALL=(ALL) NOPASSWD: /usr/sbin/chpasswd
+dashboard ALL=(ALL) NOPASSWD: /sbin/reboot
+dashboard ALL=(ALL) NOPASSWD: /sbin/shutdown
 SUDOERS
 chmod 440 /etc/sudoers.d/dashboard-setup
 

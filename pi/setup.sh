@@ -382,9 +382,19 @@ info "Marked as installed: $APP_DIR/.installed"
 
 # -- Start services ------------------------------------------------------------
 step "Starting services"
-# The display is a separate service — safe to restart inline.
-systemctl restart dashboard-display.service  2>/dev/null && info "Display started." \
-  || warn "Display failed to start. Check: journalctl -u dashboard-display"
+# Restart the kiosk so display.py changes take effect on an update. Two launch
+# mechanisms exist: a systemd service (git/setup installs) and a tty1 login-shell
+# `while true` loop (the pre-built image, where the service is disabled). Cover
+# both — restart the service if it's active, AND pkill the running display.py so
+# its launcher (service Restart=always, or the .bash_profile loop) relaunches it
+# a few seconds later with the new code. Without this, an update leaves the OLD
+# display.py rendering until the next reboot.
+systemctl restart dashboard-display.service 2>/dev/null && info "Display service restarted." || true
+if pkill -f "display.py" 2>/dev/null; then
+  info "Kiosk display.py stopped — its launcher will relaunch it with the new code."
+else
+  info "No running display.py found (it will start on next login/boot)."
+fi
 
 # Restarting dashboard-backend is special. When this script is launched by the
 # in-app updater it runs *inside* the dashboard-backend systemd cgroup, so a

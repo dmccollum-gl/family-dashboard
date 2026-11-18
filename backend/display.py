@@ -1318,38 +1318,67 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
     # ── Full-width stacking + timed top-layer rotation ───────────────────────
     # Group each day's events into overlap clusters (connected components by
     # time overlap). Non-overlapping events are singletons and unaffected.
-    # Within a cluster of n, the "active" member advances every EVENT_CYCLE_SECS
-    # and is drawn LAST (on top); the others sit behind it. Over n*5 seconds
-    # every overlapping event takes its turn fully visible.
+    #
+    # Within a cluster, a "spanning" event is one that brackets another member —
+    # it starts at/before and ends at/after it and is strictly longer (e.g. a
+    # long work block with meetings inside it). Spanning events are backdrops:
+    # they stay in the background and never rotate to the front. Only the
+    # remaining concurrent events rotate among themselves — the "active" one
+    # advances every EVENT_CYCLE_SECS and is drawn last (on top) — so each takes
+    # its turn fully visible without a long containing event flipping over them.
     global _timegrid_has_rotation
-    cycle = int(time.time() // EVENT_CYCLE_SECS)
+    cycle    = int(time.time() // EVENT_CYCLE_SECS)
+    _extent  = lambda t: t[3] - t[2]
+
+    def _clusters(tuples: list) -> list:
+        """Connected components of (ev, d, s_min, e_min) tuples by time overlap."""
+        out, its, k = [], sorted(tuples, key=lambda t: (t[2], t[3])), 0
+        while k < len(its):
+            grp, gend, m = [its[k]], its[k][3], k + 1
+            while m < len(its) and its[m][2] < gend:
+                grp.append(its[m]); gend = max(gend, its[m][3]); m += 1
+            out.append(grp); k = m
+        return out
+
     by_day: dict = {}
     for tup in visible_evs:
         by_day.setdefault(tup[1], []).append(tup)
 
     draw_order:  list = []
-    stacked_ids: dict = {}   # id(ev) -> (position, cluster_size) for the k/n badge
+    stacked_ids: dict = {}   # id(ev) -> (position, rotating_count) for the k/n badge
+    fg_ids:      set  = set() # events drawn in front of a backdrop (get the layered look)
     has_rotation = False
     for d_key in by_day:
-        items = sorted(by_day[d_key], key=lambda t: (t[2], t[3]))
-        i = 0
-        while i < len(items):
-            cluster     = [items[i]]
-            cluster_end = items[i][3]
-            j = i + 1
-            while j < len(items) and items[j][2] < cluster_end:
-                cluster.append(items[j])
-                cluster_end = max(cluster_end, items[j][3])
-                j += 1
-            n = len(cluster)
-            if n > 1:
-                has_rotation = True
-                for pos, tup in enumerate(cluster):       # start-ordered 1..n
-                    stacked_ids[id(tup[0])] = (pos + 1, n)
-                ai = cycle % n
-                cluster = cluster[ai + 1:] + cluster[:ai + 1]   # active drawn last
-            draw_order.extend(cluster)
-            i = j
+        for cluster in _clusters(by_day[d_key]):
+            if len(cluster) == 1:
+                draw_order.append(cluster[0])          # lone event: flat, full width
+                continue
+            # Split the cluster into spanning backdrops vs. concurrent events.
+            background, foreground = [], []
+            for a in cluster:
+                spans_other = any(
+                    b is not a
+                    and a[2] <= b[2] and a[3] >= b[3]
+                    and _extent(a) > _extent(b)
+                    for b in cluster
+                )
+                (background if spans_other else foreground).append(a)
+            background.sort(key=_extent, reverse=True)  # largest at the very back
+            draw_order.extend(background)
+            # Foreground events get the layered look; rotate ONLY among those
+            # that actually cover each other, so meetings that merely sit inside
+            # the same backdrop (but don't overlap one another) both stay visible.
+            for sub in _clusters(foreground):
+                for tup in sub:
+                    fg_ids.add(id(tup[0]))
+                if len(sub) > 1:
+                    has_rotation = True
+                    m = len(sub)
+                    for pos, tup in enumerate(sub):     # _clusters returns start-sorted
+                        stacked_ids[id(tup[0])] = (pos + 1, m)
+                    ai  = cycle % m
+                    sub = sub[ai + 1:] + sub[:ai + 1]   # active drawn last
+                draw_order.extend(sub)
     _timegrid_has_rotation = has_rotation
 
     for ev, d, s_min, e_min in draw_order:
@@ -1359,10 +1388,10 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         slot_x, slot_w = _calc_bounds(ev, bx)
         ev_w   = max(_s(6), int(slot_w) - _s(2))
         ev_x   = int(slot_x)
-        # In full-width mode a "stacked" event is one sharing its time slot with
-        # others; give it the layered look (drop shadow + light outline) so the
-        # top event reads as in front of the ones it's covering.
-        nested = id(ev) in stacked_ids
+        # Foreground events (concurrent ones drawn in front of a spanning
+        # backdrop) get the layered look (drop shadow + light outline) so they
+        # read as in front; spanning backdrops stay flat.
+        nested = id(ev) in fg_ids
         if nested and int(ev_h) >= _s(4):
             # Drop shadow so an event layered on top of a spanning one reads
             # as "in front of it" rather than just another adjacent block.

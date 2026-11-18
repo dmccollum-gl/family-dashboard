@@ -1300,8 +1300,6 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         one is on top every EVENT_CYCLE_SECS so each becomes legible in turn."""
         return (day_bx + _s(2), col_w - _s(4))
 
-    has_children_ids: set = set()   # no sub-column spines in full-width mode
-
     visible_evs = []
     for ev in timed_evs:
         d = (ev["start"].date() - start).days
@@ -1340,6 +1338,19 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
             out.append(grp); k = m
         return out
 
+    def _free_bands(lo: int, hi: int, covers: list) -> list:
+        """Sub-ranges of [lo, hi) left uncovered by any (cs, ce) in covers."""
+        iv = sorted((max(lo, cs), min(hi, ce)) for cs, ce in covers
+                    if min(hi, ce) > max(lo, cs))
+        bands, cur = [], lo
+        for cs, ce in iv:
+            if cs > cur:
+                bands.append((cur, cs))
+            cur = max(cur, ce)
+        if cur < hi:
+            bands.append((cur, hi))
+        return bands
+
     by_day: dict = {}
     for tup in visible_evs:
         by_day.setdefault(tup[1], []).append(tup)
@@ -1347,6 +1358,7 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
     draw_order:  list = []
     stacked_ids: dict = {}   # id(ev) -> (position, rotating_count) for the k/n badge
     fg_ids:      set  = set() # events drawn in front of a backdrop (get the layered look)
+    label_band:  dict = {}   # id(spanning ev) -> (s_min, e_min) gap to put its label in
     has_rotation = False
     for d_key in by_day:
         for cluster in _clusters(by_day[d_key]):
@@ -1364,6 +1376,20 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
                 )
                 (background if spans_other else foreground).append(a)
             background.sort(key=_extent, reverse=True)  # largest at the very back
+            # Place each spanning backdrop's label in the tallest vertical gap
+            # that nothing drawn on top of it covers, so its text is never hidden
+            # behind an overlapping event. Full-width events leave no safe
+            # horizontal strip, so a time gap is the only always-visible space.
+            fg_set = {id(f[0]) for f in foreground}
+            for B in background:
+                covers = [
+                    (c[2], c[3]) for c in cluster
+                    if c is not B and c[2] < B[3] and c[3] > B[2]
+                    and (id(c[0]) in fg_set or _extent(c) < _extent(B))
+                ]
+                gaps = _free_bands(B[2], B[3], covers)
+                if gaps:
+                    label_band[id(B[0])] = max(gaps, key=lambda g: (g[1] - g[0], -g[0]))
             draw_order.extend(background)
             # Foreground events get the layered look; rotate ONLY among those
             # that actually cover each other, so meetings that merely sit inside
@@ -1429,16 +1455,25 @@ def _draw_timegrid(surf: pygame.Surface, C: dict, events_raw: list,
         # children are already confined (via _calc_bounds) to the width to the
         # right of it, so this label can never end up covered by one of them.
         pad_x   = _s(6)
-        label_w = ev_w * _SPINE_FRACTION if id(ev) in has_children_ids else ev_w
+        label_w = ev_w
+        # A spanning backdrop labels itself inside a vertical gap that no
+        # overlapping event covers (label_band); every other event uses its own
+        # box top. This keeps the backdrop's title from ever hiding behind the
+        # meetings drawn on top of it.
+        band = label_band.get(id(ev))
+        if band:
+            lbl_top   = grid_top + (band[0] - GRID_START * 60) / 60 * row_h
+            lbl_box_h = max(_s(10), (band[1] - band[0]) / 60 * row_h - 2)
+        else:
+            lbl_top, lbl_box_h = ev_y, ev_h
         lbl_x   = ev_x + pad_x
-        lbl_y   = ev_y + _s(2)
+        lbl_y   = lbl_top + _s(2)
         lbl_w   = label_w - pad_x - _s(3)
-        lbl_h   = ev_h - _s(4)
-        # Clip to the label area so a run of narrow same-calendar
-        # double-bookings — or a container's children — can never bleed
-        # text into a neighboring slot.
+        lbl_h   = lbl_box_h - _s(4)
+        # Clip to the label area so text never bleeds outside the event's box
+        # (or, for a backdrop, outside its chosen gap).
         prev_clip = surf.get_clip()
-        surf.set_clip(pygame.Rect(int(ev_x), int(ev_y), int(label_w), int(ev_h)))
+        surf.set_clip(pygame.Rect(int(ev_x), int(lbl_top), int(label_w), int(lbl_box_h)))
         min_time_h = _font(8).get_linesize()
         if lbl_h >= min_time_h + _s(10):
             # Shrink the font, then wrap onto a second line, before ever
